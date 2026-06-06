@@ -2,6 +2,7 @@ package com.main.util;
 
 import java.awt.Color;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 import com.main.audio.Scheduler;
@@ -16,32 +17,66 @@ import net.dv8tion.jda.api.entities.MessageEmbed;
  */
 public final class EmbedFactory {
 
-    private static final Color NOW_PLAYING_GREEN = new Color(0x1DB954);
+    private static final Color NOW_PLAYING_RED = new Color(0xE53935); // YouTube-ish
     private static final Color ENQUEUED_GREEN = new Color(0x00C853);
     private static final Color QUEUE_PURPLE = new Color(0x6A0DAD);
     private static final Color PANEL_BLUE = new Color(0x3498DB);
     private static final int QUEUE_PREVIEW_LIMIT = 15;
+    private static final int PROGRESS_BAR_SIZE = 18;
 
     private EmbedFactory() {}
 
-    public static MessageEmbed nowPlaying(AudioTrack track, String requesterName, String requesterAvatar) {
+    public static MessageEmbed nowPlaying(AudioTrack track, String requesterName,
+                                          String requesterAvatar, Scheduler scheduler) {
         AudioTrackInfo info = track.getInfo();
-        EmbedBuilder eb = baseTrackEmbed(track, NOW_PLAYING_GREEN, "Reproduciendo")
-                .setDescription("**Artista:** " + nullSafe(info.author) + "\n"
-                              + "**Duracion:** " + formatTime(info.length));
-        if (requesterName != null) eb.setFooter("Pedido por " + requesterName, safeUrl(requesterAvatar));
+        String url = safeUrl(info.uri);
+        EmbedBuilder eb = new EmbedBuilder()
+                .setAuthor("\u25B6  Reproduciendo ahora", url, null)
+                .setTitle(info.title, url)
+                .setColor(NOW_PLAYING_RED)
+                .addField("Artista", "`" + nullSafe(info.author) + "`", true)
+                .addField("Duracion", "`" + formatTime(info.length) + "`", true);
+
+        if (scheduler != null) {
+            int queued = scheduler.snapshot().size();
+            if (queued > 0) {
+                eb.addField("En cola", "`" + queued + " pista" + (queued == 1 ? "" : "s") + "`", true);
+            }
+        }
+
+        String image = thumbnailFor(track);
+        if (image != null) eb.setImage(image);
+
+        if (requesterName != null) {
+            eb.setFooter("Pedido por " + requesterName + "  \u00B7  usa /panel para progreso en vivo",
+                         safeUrl(requesterAvatar));
+        }
+        eb.setTimestamp(Instant.now());
         return eb.build();
     }
 
     public static MessageEmbed enqueued(AudioTrack track, int positionInQueue,
                                         String requesterName, String requesterAvatar) {
         AudioTrackInfo info = track.getInfo();
-        String pos = positionInQueue > 0 ? "\n**Posicion en cola:** " + positionInQueue : "";
-        EmbedBuilder eb = baseTrackEmbed(track, ENQUEUED_GREEN, "En cola")
-                .setDescription("**Artista:** " + nullSafe(info.author) + "\n"
-                              + "**Duracion:** " + formatTime(info.length)
-                              + pos);
-        if (requesterName != null) eb.setFooter("Pedido por " + requesterName, safeUrl(requesterAvatar));
+        String url = safeUrl(info.uri);
+        EmbedBuilder eb = new EmbedBuilder()
+                .setAuthor("\u2795  Anadida a la cola", url, null)
+                .setTitle(info.title, url)
+                .setColor(ENQUEUED_GREEN)
+                .addField("Artista", "`" + nullSafe(info.author) + "`", true)
+                .addField("Duracion", "`" + formatTime(info.length) + "`", true);
+
+        if (positionInQueue > 0) {
+            eb.addField("Posicion", "`#" + positionInQueue + "`", true);
+        }
+
+        String thumb = thumbnailFor(track);
+        if (thumb != null) eb.setThumbnail(thumb);
+
+        if (requesterName != null) {
+            eb.setFooter("Pedido por " + requesterName, safeUrl(requesterAvatar));
+        }
+        eb.setTimestamp(Instant.now());
         return eb.build();
     }
 
@@ -50,41 +85,53 @@ public final class EmbedFactory {
         List<AudioTrack> upcoming = scheduler.snapshot();
 
         EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("Cola de reproduccion")
+                .setAuthor("\uD83C\uDFB6  Cola de reproduccion", null, null)
                 .setColor(QUEUE_PURPLE);
 
-        eb.addField("Now Playing",
-                now != null ? now.getInfo().title : "_Nada_",
-                false);
+        if (now != null) {
+            AudioTrackInfo info = now.getInfo();
+            String url = safeUrl(info.uri);
+            String title = url != null ? "[" + info.title + "](" + url + ")" : info.title;
+            eb.addField("\u25B6  Sonando ahora",
+                    title + "\n`" + formatTime(now.getPosition()) + " / " + formatTime(info.length) + "`",
+                    false);
+        } else {
+            eb.addField("\u25B6  Sonando ahora", "_Nada._", false);
+        }
 
         if (upcoming.isEmpty()) {
-            eb.addField("Proximas pistas", "_La cola esta vacia._", false);
+            eb.addField("\uD83D\uDCCB  Proximas pistas", "_La cola esta vacia._", false);
         } else {
             StringBuilder sb = new StringBuilder();
             int max = Math.min(upcoming.size(), QUEUE_PREVIEW_LIMIT);
+            long totalMs = 0;
             for (int i = 0; i < max; i++) {
-                sb.append("**").append(i + 1).append(".** ")
-                  .append(upcoming.get(i).getInfo().title).append('\n');
+                AudioTrackInfo info = upcoming.get(i).getInfo();
+                sb.append("`").append(String.format("%2d", i + 1)).append(".` ")
+                  .append(truncate(info.title, 60))
+                  .append(" `[").append(formatTime(info.length)).append("]`\n");
             }
+            for (AudioTrack t : upcoming) totalMs += t.getInfo().length;
             if (upcoming.size() > max) {
                 sb.append("_...y ").append(upcoming.size() - max).append(" pista(s) mas._");
             }
-            eb.addField("Proximas pistas", sb.toString(), false);
+            eb.addField("\uD83D\uDCCB  Proximas pistas", sb.toString(), false);
+            eb.addField("Total en cola", "`" + upcoming.size() + " pistas`", true);
+            eb.addField("Duracion total", "`" + formatTime(totalMs) + "`", true);
         }
 
-        eb.setFooter("Modo loop: " + scheduler.getLoopMode() + " | Volumen: " + scheduler.getVolume()
-                   + " | Total: " + upcoming.size() + " pista(s) en cola");
+        eb.setFooter("Loop: " + scheduler.getLoopMode() + "  |  Volumen: " + scheduler.getVolume() + "%");
         return eb.build();
     }
 
     public static MessageEmbed panel(Scheduler scheduler) {
         AudioTrack now = scheduler.nowPlaying();
         EmbedBuilder eb = new EmbedBuilder()
-                .setTitle("Panel de control")
+                .setAuthor("\uD83C\uDFB9  Panel de control", null, null)
                 .setColor(PANEL_BLUE);
 
         if (now == null) {
-            eb.setDescription("_Nada sonando ahora mismo._");
+            eb.setDescription("_Nada sonando ahora mismo._\nUsa `/play` o `!play` para empezar.");
         } else {
             AudioTrackInfo info = now.getInfo();
             String thumb = thumbnailFor(now);
@@ -93,15 +140,16 @@ public final class EmbedFactory {
             String url = safeUrl(info.uri);
             String title = url != null ? "[" + info.title + "](" + url + ")" : info.title;
 
-            eb.setDescription("**" + title + "**\n"
-                            + "Artista: " + nullSafe(info.author) + "\n"
-                            + "Progreso: " + formatTime(now.getPosition()) + " / " + formatTime(info.length));
+            eb.setDescription("### " + title + "\n"
+                            + "_por " + nullSafe(info.author) + "_\n\n"
+                            + progressBar(now.getPosition(), info.length) + "\n"
+                            + "`" + formatTime(now.getPosition()) + " / " + formatTime(info.length) + "`");
         }
 
         int queued = scheduler.snapshot().size();
-        eb.addField("Cola", queued == 0 ? "vacia" : queued + " pista(s)", true);
-        eb.addField("Loop", scheduler.getLoopMode().name(), true);
-        eb.addField("Volumen", scheduler.getVolume() + "%", true);
+        eb.addField("Cola", "`" + (queued == 0 ? "vacia" : queued + " pista(s)") + "`", true);
+        eb.addField("Loop", "`" + scheduler.getLoopMode().name() + "`", true);
+        eb.addField("Volumen", "`" + scheduler.getVolume() + "%`", true);
         return eb.build();
     }
 
@@ -115,15 +163,25 @@ public final class EmbedFactory {
         return String.format("%02d:%02d", m, s);
     }
 
-    private static EmbedBuilder baseTrackEmbed(AudioTrack track, Color color, String authorLabel) {
-        AudioTrackInfo info = track.getInfo();
-        EmbedBuilder eb = new EmbedBuilder()
-                .setAuthor(authorLabel, safeUrl(info.uri), null)
-                .setTitle(info.title, safeUrl(info.uri))
-                .setColor(color);
-        String thumb = thumbnailFor(track);
-        if (thumb != null) eb.setThumbnail(thumb);
-        return eb;
+    /**
+     * Renders a progress bar like {@code ▬▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬} using a
+     * filled-track / position-marker / empty-track convention.
+     */
+    private static String progressBar(long positionMs, long totalMs) {
+        if (totalMs <= 0) return "\uD83D\uDD34  EN VIVO";
+        double ratio = Math.max(0, Math.min(1.0, (double) positionMs / (double) totalMs));
+        int marker = Math.min(PROGRESS_BAR_SIZE - 1, (int) Math.round(ratio * (PROGRESS_BAR_SIZE - 1)));
+        StringBuilder sb = new StringBuilder(PROGRESS_BAR_SIZE);
+        for (int i = 0; i < PROGRESS_BAR_SIZE; i++) {
+            if (i == marker) sb.append("\uD83D\uDD18"); // radio button
+            else sb.append("\u25AC"); // black rectangle
+        }
+        return sb.toString();
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max - 1) + "\u2026";
     }
 
     private static String nullSafe(String s) {

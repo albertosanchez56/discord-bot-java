@@ -2,16 +2,18 @@ package com.main.commands;
 
 import com.main.audio.AudioService;
 import com.main.audio.Scheduler;
+import com.main.core.PrefixCommand;
 import com.main.core.SlashCommand;
 import com.main.util.EmbedFactory;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public final class SeekCommand implements SlashCommand {
+public final class SeekCommand implements SlashCommand, PrefixCommand {
 
     private final AudioService audio;
 
@@ -47,6 +49,34 @@ public final class SeekCommand implements SlashCommand {
             return;
         }
         event.reply("Saltado a **" + EmbedFactory.formatTime(millis) + "**.").queue();
+    }
+
+    @Override
+    public String name() { return "seek"; }
+    @Override
+    public String usage() { return "!seek <pos>"; }
+    @Override
+    public String description() { return "Salta a una posicion (segundos, mm:ss o hh:mm:ss)."; }
+
+    @Override
+    public void execute(MessageReceivedEvent event, String args) {
+        if (args.isBlank()) {
+            event.getChannel().sendMessage("Uso: `!seek 90` o `!seek 1:30`.").queue();
+            return;
+        }
+        long millis;
+        try {
+            millis = parseToMillis(args.trim());
+        } catch (IllegalArgumentException ex) {
+            event.getChannel().sendMessage("Formato no valido: `" + args + "`. Usa segundos, mm:ss o hh:mm:ss.").queue();
+            return;
+        }
+        Scheduler s = audio.get(event.getGuild()).scheduler();
+        if (!s.seek(millis)) {
+            event.getChannel().sendMessage("No se puede saltar (no hay pista o no es seekable).").queue();
+            return;
+        }
+        event.getChannel().sendMessage("Saltado a **" + EmbedFactory.formatTime(millis) + "**.").queue();
     }
 
     static long parseToMillis(String raw) {

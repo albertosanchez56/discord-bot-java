@@ -19,6 +19,7 @@ public final class GuildAudio {
     private volatile MessageChannel textChannel;
     private volatile Long panelMessageId;
     private volatile Long panelChannelId;
+    private volatile String lastAnnouncedIdentifier;
 
     public GuildAudio(long guildId, AudioPlayerManager manager) {
         this.guildId = guildId;
@@ -48,4 +49,7 @@ public final class GuildAudio {
         this.panelChannelId = null;
         this.panelMessageId = null;
     }
+
+    public String lastAnnouncedIdentifier() { return lastAnnouncedIdentifier; }
+    public void setLastAnnouncedIdentifier(String id) { this.lastAnnouncedIdentifier = id; }
 }

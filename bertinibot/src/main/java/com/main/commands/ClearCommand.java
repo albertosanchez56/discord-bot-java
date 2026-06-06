@@ -1,14 +1,20 @@
 package com.main.commands;
 
+import java.util.List;
+
 import com.main.audio.AudioService;
+import com.main.core.PrefixCommand;
 import com.main.core.SlashCommand;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public final class ClearCommand implements SlashCommand {
+public final class ClearCommand implements SlashCommand, PrefixCommand {
+
+    private static final String MSG = "Cola vaciada y reproduccion detenida.";
 
     private final AudioService audio;
 
@@ -29,6 +35,21 @@ public final class ClearCommand implements SlashCommand {
             return;
         }
         audio.clear(guild);
-        event.reply("Cola vaciada y reproduccion detenida.").queue();
+        event.reply(MSG).queue();
+    }
+
+    @Override
+    public String name() { return "clear"; }
+    @Override
+    public List<String> aliases() { return List.of("stop"); }
+    @Override
+    public String usage() { return "!clear"; }
+    @Override
+    public String description() { return "Vacia la cola y detiene la reproduccion."; }
+
+    @Override
+    public void execute(MessageReceivedEvent event, String args) {
+        audio.clear(event.getGuild());
+        event.getChannel().sendMessage(MSG).queue();
     }
 }

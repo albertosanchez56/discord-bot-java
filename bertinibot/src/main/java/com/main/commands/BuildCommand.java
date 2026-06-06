@@ -20,13 +20,16 @@ import javax.imageio.ImageIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.main.core.PrefixCommand;
 import com.main.core.SlashCommand;
 import com.main.service.MetasrcService;
 import com.main.util.AsyncHttp;
 
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
@@ -40,7 +43,7 @@ import net.dv8tion.jda.api.utils.FileUpload;
  * shared {@link AsyncHttp} client, PNGs written to temp files (no cwd
  * pollution) and embeds composed in memory.
  */
-public final class BuildCommand implements SlashCommand {
+public final class BuildCommand implements SlashCommand, PrefixCommand {
 
     private static final Logger log = LoggerFactory.getLogger(BuildCommand.class);
     private final MetasrcService metasrc = new MetasrcService();
@@ -60,52 +63,96 @@ public final class BuildCommand implements SlashCommand {
                 : "classic";
 
         event.deferReply().queue();
-
         try {
-            MetasrcService.Build build = metasrc.fetchBuild(champ, mode);
-
-            File runesFile = null;
-            if (!build.runeUrls().isEmpty()) {
-                runesFile = createGridImage(build.runeUrls(), "runes", 56, 6, 5);
-            }
-            File itemsFile = null;
-            if (!build.itemUrls().isEmpty()) {
-                itemsFile = createGridImage(build.itemUrls(), "items", 42, 6, 6);
-            }
-
-            List<FileUpload> uploads = new ArrayList<>();
-            List<MessageEmbed> embeds = new ArrayList<>();
-
-            if (runesFile != null) {
-                uploads.add(FileUpload.fromData(runesFile, "runes.png"));
-                embeds.add(new EmbedBuilder()
-                        .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") - Runas")
-                        .setColor(new Color(0x00ADEF))
-                        .setImage("attachment://runes.png")
-                        .build());
-            }
-            if (itemsFile != null) {
-                uploads.add(FileUpload.fromData(itemsFile, "items.png"));
-                embeds.add(new EmbedBuilder()
-                        .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") - Objetos")
-                        .setColor(new Color(0x00ADEF))
-                        .setImage("attachment://items.png")
-                        .build());
-            }
-
-            if (uploads.isEmpty()) {
+            BuildResult res = renderBuild(champ, mode);
+            if (res.uploads.isEmpty()) {
                 event.getHook().sendMessage("No pude encontrar runas ni objetos para ese campeon/modo.").queue();
                 return;
             }
-
-            final File runesToClean = runesFile;
-            final File itemsToClean = itemsFile;
-            event.getHook().sendFiles(uploads).addEmbeds(embeds).queue(
-                    ok -> cleanup(runesToClean, itemsToClean),
-                    err -> cleanup(runesToClean, itemsToClean));
+            event.getHook().sendFiles(res.uploads).addEmbeds(res.embeds).queue(
+                    ok -> cleanup(res.files()),
+                    err -> cleanup(res.files()));
         } catch (Exception e) {
             log.warn("/build failed for champ={} mode={}: {}", champ, mode, e.getMessage());
             event.getHook().sendMessage("Error al obtener la build: " + e.getMessage()).queue();
+        }
+    }
+
+    @Override
+    public String name() { return "build"; }
+    @Override
+    public String usage() { return "!build <champion> [mode]"; }
+    @Override
+    public String description() { return "Runas y objetos de un campeon de LoL (METAsrc)."; }
+
+    @Override
+    public void execute(MessageReceivedEvent event, String args) {
+        if (args.isBlank()) {
+            event.getChannel().sendMessage("Uso: `!build <champion> [classic|aram|urf]`.").queue();
+            return;
+        }
+        String[] parts = args.trim().split("\\s+", 2);
+        String champ = parts[0].toLowerCase();
+        String mode = parts.length > 1 ? parts[1].toLowerCase() : "classic";
+
+        MessageChannel ch = event.getChannel();
+        ch.sendMessage("Buscando build de **" + champ + "** (" + mode + ")...").queue(notice ->
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        BuildResult res = renderBuild(champ, mode);
+                        if (res.uploads.isEmpty()) {
+                            notice.editMessage("No pude encontrar runas ni objetos para ese campeon/modo.").queue();
+                            return;
+                        }
+                        notice.delete().queue();
+                        ch.sendFiles(res.uploads).addEmbeds(res.embeds).queue(
+                                ok -> cleanup(res.files()),
+                                err -> cleanup(res.files()));
+                    } catch (Exception e) {
+                        log.warn("!build failed for champ={} mode={}: {}", champ, mode, e.getMessage());
+                        notice.editMessage("Error al obtener la build: " + e.getMessage()).queue();
+                    }
+                }));
+    }
+
+    private BuildResult renderBuild(String champ, String mode) throws Exception {
+        MetasrcService.Build build = metasrc.fetchBuild(champ, mode);
+
+        File runesFile = null;
+        if (!build.runeUrls().isEmpty()) {
+            runesFile = createGridImage(build.runeUrls(), "runes", 56, 6, 5);
+        }
+        File itemsFile = null;
+        if (!build.itemUrls().isEmpty()) {
+            itemsFile = createGridImage(build.itemUrls(), "items", 42, 6, 6);
+        }
+
+        List<FileUpload> uploads = new ArrayList<>();
+        List<MessageEmbed> embeds = new ArrayList<>();
+
+        if (runesFile != null) {
+            uploads.add(FileUpload.fromData(runesFile, "runes.png"));
+            embeds.add(new EmbedBuilder()
+                    .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") - Runas")
+                    .setColor(new Color(0x00ADEF))
+                    .setImage("attachment://runes.png")
+                    .build());
+        }
+        if (itemsFile != null) {
+            uploads.add(FileUpload.fromData(itemsFile, "items.png"));
+            embeds.add(new EmbedBuilder()
+                    .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") - Objetos")
+                    .setColor(new Color(0x00ADEF))
+                    .setImage("attachment://items.png")
+                    .build());
+        }
+        return new BuildResult(uploads, embeds, runesFile, itemsFile);
+    }
+
+    private record BuildResult(List<FileUpload> uploads, List<MessageEmbed> embeds,
+                               File runesFile, File itemsFile) {
+        File[] files() {
+            return new File[] { runesFile, itemsFile };
         }
     }
 

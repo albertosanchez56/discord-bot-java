@@ -2,16 +2,18 @@ package com.main.commands;
 
 import com.main.audio.AudioService;
 import com.main.audio.GuildAudio;
+import com.main.core.PrefixCommand;
 import com.main.core.SlashCommand;
 import com.main.panel.PanelButtons;
 import com.main.util.EmbedFactory;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public final class PanelCommand implements SlashCommand {
+public final class PanelCommand implements SlashCommand, PrefixCommand {
 
     private final AudioService audio;
 
@@ -40,5 +42,23 @@ public final class PanelCommand implements SlashCommand {
                         PanelButtons.volumeRow(g.scheduler()))
                 .queue(hook -> hook.retrieveOriginal().queue(msg ->
                         g.setPanel(event.getChannel().getIdLong(), msg.getIdLong())));
+    }
+
+    @Override
+    public String name() { return "panel"; }
+    @Override
+    public String usage() { return "!panel"; }
+    @Override
+    public String description() { return "Abre el panel de control con botones de reproduccion."; }
+
+    @Override
+    public void execute(MessageReceivedEvent event, String args) {
+        GuildAudio g = audio.get(event.getGuild());
+        g.setTextChannel(event.getChannel());
+        event.getChannel().sendMessageEmbeds(EmbedFactory.panel(g.scheduler()))
+                .addComponents(
+                        PanelButtons.transportRow(g.scheduler()),
+                        PanelButtons.volumeRow(g.scheduler()))
+                .queue(msg -> g.setPanel(event.getChannel().getIdLong(), msg.getIdLong()));
     }
 }

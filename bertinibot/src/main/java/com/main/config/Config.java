@@ -36,8 +36,21 @@ public final class Config {
         return optional("GUILD_ID", "discord.guild.id");
     }
 
+    /**
+     * Comma-separated list of block rules. Each rule is one or more tokens
+     * joined by {@code +} (AND); a track is blocked when its
+     * {@code "title | author"} contains <strong>all</strong> tokens of
+     * <strong>any</strong> rule, case-insensitive.
+     *
+     * Defaults to {@code "roxanne+arizona"} so only "Roxanne" by Arizona
+     * Zervas is rejected (returning the "aqui no hay quien viva" GIF),
+     * letting through other songs that happen to be called Roxanne.
+     *
+     * Set {@code BLOCKED_TITLES} env var (or {@code blocked.titles} property)
+     * to override, including the empty string to disable blocking entirely.
+     */
     public static String blockedTitlesCsv() {
-        return optional("BLOCKED_TITLES", "blocked.titles").orElse("");
+        return optional("BLOCKED_TITLES", "blocked.titles").orElse("roxanne+arizona");
     }
 
     private static Optional<String> optional(String envName, String... propertyKeys) {

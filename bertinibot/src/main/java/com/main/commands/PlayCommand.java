@@ -1,33 +1,38 @@
 package com.main.commands;
 
+import java.util.List;
+import java.util.function.Consumer;
+
 import com.main.audio.AudioService;
 import com.main.audio.AudioService.LoadResult;
 import com.main.audio.GuildAudio;
+import com.main.audio.RequesterInfo;
+import com.main.core.PrefixCommand;
 import com.main.core.SlashCommand;
-import com.main.filters.TrackFilter;
 import com.main.util.EmbedFactory;
-
-import java.util.List;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.GuildVoiceState;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.User;
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.entities.channel.unions.AudioChannelUnion;
 import net.dv8tion.jda.api.events.interaction.command.CommandAutoCompleteInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public final class PlayCommand implements SlashCommand, SlashCommand.AutoCompletable {
+public final class PlayCommand implements SlashCommand, SlashCommand.AutoCompletable, PrefixCommand {
+
+    private static final String BLOCKED_GIF = "https://tenor.com/view/aqui-no-hay-quien-viva-gif-14069994";
 
     private final AudioService audio;
-    private final TrackFilter filter;
 
-    public PlayCommand(AudioService audio, TrackFilter filter) {
+    public PlayCommand(AudioService audio) {
         this.audio = audio;
-        this.filter = filter;
     }
 
     @Override
@@ -72,47 +77,104 @@ public final class PlayCommand implements SlashCommand, SlashCommand.AutoComplet
         }
 
         String query = event.getOption("query").getAsString();
-        User requester = event.getUser();
-
         event.deferReply().queue();
+        play(guild, channel, event.getChannel(), event.getUser(), query,
+                msg -> event.getHook().sendMessage(msg).queue(),
+                embed -> event.getHook().sendMessageEmbeds(embed).queue(),
+                ack -> event.getHook().sendMessage(ack).setEphemeral(true).queue());
+    }
 
+    @Override
+    public String name() { return "play"; }
+    @Override
+    public List<String> aliases() { return List.of("p"); }
+    @Override
+    public String usage() { return "!play <url|texto>"; }
+    @Override
+    public String description() { return "Reproduce audio desde YouTube (URL o busqueda)."; }
+
+    @Override
+    public void execute(MessageReceivedEvent event, String args) {
+        MessageChannel ch = event.getChannel();
+        if (args.isBlank()) {
+            ch.sendMessage("Uso: `!play <url o texto>`. Ej.: `!play eminem lose yourself`.").queue();
+            return;
+        }
+        Member member = event.getMember();
+        if (member == null) {
+            ch.sendMessage("Solo se puede usar en un servidor.").queue();
+            return;
+        }
+        GuildVoiceState voiceState = member.getVoiceState();
+        if (voiceState == null || !voiceState.inAudioChannel()) {
+            ch.sendMessage("Tienes que estar en un canal de voz primero.").queue();
+            return;
+        }
+        AudioChannelUnion channel = voiceState.getChannel();
+        if (channel == null) {
+            ch.sendMessage("No puedo unirme a tu canal de voz.").queue();
+            return;
+        }
+
+        play(event.getGuild(), channel, ch, event.getAuthor(), args.trim(),
+                msg -> ch.sendMessage(msg).queue(),
+                embed -> ch.sendMessageEmbeds(embed).queue(),
+                ack -> event.getMessage().addReaction(net.dv8tion.jda.api.entities.emoji.Emoji.fromUnicode("\uD83D\uDC4C")).queue(null, e -> {}));
+    }
+
+    private void play(Guild guild, AudioChannelUnion channel, MessageChannel textChannel,
+                      User requester, String query,
+                      Consumer<String> reply, Consumer<MessageEmbed> replyEmbed,
+                      Consumer<String> silentAck) {
         GuildAudio g = audio.get(guild);
-        g.setTextChannel(event.getChannel());
+        g.setTextChannel(textChannel);
         audio.connect(guild, channel);
 
-        audio.enqueue(guild, query).whenComplete((result, err) -> {
+        RequesterInfo info = new RequesterInfo(requester.getName(), requester.getEffectiveAvatarUrl());
+
+        audio.enqueue(guild, query, info).whenComplete((result, err) -> {
             if (err != null) {
-                event.getHook().sendMessage("Error procesando la peticion: " + err.getMessage()).queue();
+                reply.accept("Error procesando la peticion: " + err.getMessage());
                 return;
             }
             switch (result) {
-                case LoadResult.Single s -> handleSingle(event, requester, g, s);
-                case LoadResult.Playlist p -> event.getHook()
-                        .sendMessage("Encoladas **" + p.playlist().getTracks().size()
-                                + "** pistas de _" + p.playlist().getName() + "_.").queue();
-                case LoadResult.NoMatches n -> event.getHook()
-                        .sendMessage("No encontre nada para: `" + query + "`").queue();
-                case LoadResult.Failed f -> event.getHook()
-                        .sendMessage("No se pudo cargar la pista: " + f.error().getMessage()).queue();
+                case LoadResult.Single s -> handleSingle(g, requester, s, reply, replyEmbed, silentAck);
+                case LoadResult.Playlist p -> {
+                    int kept = p.playlist().getTracks().size() - p.skippedBlocked();
+                    String msg = "Encoladas **" + kept + "** pistas de _" + p.playlist().getName() + "_.";
+                    if (p.skippedBlocked() > 0) {
+                        msg += " (Se omitieron " + p.skippedBlocked() + " bloqueada"
+                                + (p.skippedBlocked() == 1 ? "" : "s") + ".)";
+                    }
+                    reply.accept(msg);
+                }
+                case LoadResult.Blocked b -> handleBlocked(b.track(), reply);
+                case LoadResult.NoMatches n -> reply.accept("No encontre nada para: `" + query + "`");
+                case LoadResult.Failed f -> reply.accept("No se pudo cargar la pista: "
+                        + f.error().getMessage());
             }
         });
     }
 
-    private void handleSingle(SlashCommandInteractionEvent event, User requester,
-                              GuildAudio g, LoadResult.Single single) {
+    private void handleSingle(GuildAudio g, User requester, LoadResult.Single single,
+                              Consumer<String> reply, Consumer<MessageEmbed> replyEmbed,
+                              Consumer<String> silentAck) {
         var track = single.track();
-        if (filter.isBlocked(track.getInfo().title)) {
-            g.scheduler().clear();
-            event.getHook().sendMessage("La cancion **" + track.getInfo().title
-                    + "** esta bloqueada por filtros.").queue();
+        boolean nowPlaying = g.scheduler().nowPlaying() == track;
+        if (nowPlaying) {
+            // The Scheduler's onTrackStart hook already published a rich
+            // "Reproduciendo ahora" embed; avoid duplicating it. Give the
+            // user a discreet ack instead.
+            silentAck.accept("\u25B6 Sonando: **" + track.getInfo().title + "**");
             return;
         }
+        replyEmbed.accept(EmbedFactory.enqueued(track, g.scheduler().snapshot().size(),
+                requester.getName(), requester.getEffectiveAvatarUrl()));
+    }
 
-        boolean nowPlaying = g.scheduler().nowPlaying() == track;
-        var embed = nowPlaying
-                ? EmbedFactory.nowPlaying(track, requester.getName(), requester.getEffectiveAvatarUrl())
-                : EmbedFactory.enqueued(track, g.scheduler().snapshot().size(),
-                                        requester.getName(), requester.getEffectiveAvatarUrl());
-        event.getHook().sendMessageEmbeds(embed).queue();
+    private void handleBlocked(com.sedmelluq.discord.lavaplayer.track.AudioTrack track,
+                               Consumer<String> reply) {
+        reply.accept("\uD83D\uDEAB La cancion **" + track.getInfo().title + "** esta bloqueada.\n"
+                + BLOCKED_GIF);
     }
 }

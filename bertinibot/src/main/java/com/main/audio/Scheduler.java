@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.function.Consumer;
 
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayer;
 import com.sedmelluq.discord.lavaplayer.player.event.AudioEventAdapter;
@@ -25,6 +26,7 @@ public final class Scheduler extends AudioEventAdapter {
     private volatile LoopMode loopMode = LoopMode.OFF;
     private volatile Runnable onIdle;
     private volatile Runnable onChange;
+    private volatile Consumer<AudioTrack> onTrackStart;
 
     public Scheduler(AudioPlayer player) {
         this.player = player;
@@ -32,6 +34,7 @@ public final class Scheduler extends AudioEventAdapter {
 
     public void setOnIdle(Runnable r) { this.onIdle = r; }
     public void setOnChange(Runnable r) { this.onChange = r; }
+    public void setOnTrackStart(Consumer<AudioTrack> r) { this.onTrackStart = r; }
 
     public LoopMode getLoopMode() { return loopMode; }
 
@@ -114,6 +117,12 @@ public final class Scheduler extends AudioEventAdapter {
         current.setPosition(clamped);
         fireChange();
         return true;
+    }
+
+    @Override
+    public void onTrackStart(AudioPlayer p, AudioTrack track) {
+        Consumer<AudioTrack> r = onTrackStart;
+        if (r != null) r.accept(track);
     }
 
     @Override

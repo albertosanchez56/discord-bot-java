@@ -8,11 +8,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.main.audio.Scheduler.LoopMode;
+import com.main.util.EmbedFactory;
 import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
 import com.sedmelluq.discord.lavaplayer.player.DefaultAudioPlayerManager;
@@ -25,6 +28,7 @@ import dev.lavalink.youtube.YoutubeAudioSourceManager;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.channel.middleman.AudioChannel;
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.entities.channel.unions.AudioChannelUnion;
 import net.dv8tion.jda.api.managers.AudioManager;
 
@@ -45,6 +49,13 @@ public final class AudioService {
     private static final long IDLE_TIMEOUT_SECONDS = 60;
     private static final long ALONE_GRACE_SECONDS = 60;
 
+    private static final String FAREWELL_GIF =
+            "https://tenor.com/view/hasta-la-proxima-float-fly-gif-14857954";
+    private static final String FAREWELL_IDLE =
+            "Me desconecto por inactividad. \u00a1Hasta la pr\u00f3xima!";
+    private static final String FAREWELL_ALONE =
+            "Me he quedado solo en el canal. \u00a1Hasta la pr\u00f3xima!";
+
     private final AudioPlayerManager playerManager = new DefaultAudioPlayerManager();
     private final Map<Long, GuildAudio> guilds = new ConcurrentHashMap<>();
     private final Map<Long, ScheduledFuture<?>> idleTasks = new ConcurrentHashMap<>();
@@ -56,6 +67,7 @@ public final class AudioService {
     });
     private final ResolveCache cache = new ResolveCache();
     private volatile Consumer<Guild> onGuildUpdate = g -> {};
+    private volatile BiPredicate<String, String> trackBlockedFilter = (title, author) -> false;
 
     public AudioService() {
         YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager(true);
@@ -73,12 +85,22 @@ public final class AudioService {
             GuildAudio g = new GuildAudio(id, playerManager);
             g.scheduler().setOnIdle(() -> scheduleIdleDisconnect(guild));
             g.scheduler().setOnChange(() -> onGuildUpdate.accept(guild));
+            g.scheduler().setOnTrackStart(track -> publishNowPlaying(guild, track));
             return g;
         });
     }
 
     public void setOnGuildUpdate(Consumer<Guild> listener) {
         this.onGuildUpdate = listener != null ? listener : g -> {};
+    }
+
+    /**
+     * Plug in a predicate that decides if a track is blocked, based on title
+     * and author. Validated before enqueueing so blocked tracks never enter
+     * the queue or trigger the {@code onTrackStart} announcement.
+     */
+    public void setTrackBlockedFilter(BiPredicate<String, String> filter) {
+        this.trackBlockedFilter = filter != null ? filter : (title, author) -> false;
     }
 
     /**
@@ -121,15 +143,25 @@ public final class AudioService {
     /**
      * Resolve {@code query} (URL or text) and enqueue the resulting track(s).
      * Cached resolutions short-circuit the network call.
+     *
+     * The {@code requester} is attached to each track via
+     * {@link AudioTrack#setUserData(Object)} so that the auto-published
+     * "Reproduciendo ahora" embed (fired from {@code onTrackStart}) can credit
+     * who added the song without plumbing the user through more APIs.
      */
-    public CompletableFuture<LoadResult> enqueue(Guild guild, String query) {
+    public CompletableFuture<LoadResult> enqueue(Guild guild, String query, RequesterInfo requester) {
         cancelAllDisconnects(guild);
         String identifier = resolveIdentifier(query);
         String key = normalizeKey(identifier);
         Optional<AudioTrack> cached = cache.get(key);
         if (cached.isPresent()) {
-            get(guild).scheduler().enqueue(cached.get());
-            return CompletableFuture.completedFuture(new LoadResult.Single(cached.get(), true));
+            AudioTrack copy = cached.get().makeClone();
+            if (isBlocked(copy)) {
+                return CompletableFuture.completedFuture(new LoadResult.Blocked(copy));
+            }
+            tag(copy, requester);
+            get(guild).scheduler().enqueue(copy);
+            return CompletableFuture.completedFuture(new LoadResult.Single(copy, true));
         }
 
         CompletableFuture<LoadResult> future = new CompletableFuture<>();
@@ -138,7 +170,12 @@ public final class AudioService {
             @Override
             public void trackLoaded(AudioTrack track) {
                 cancelAllDisconnects(guild);
+                if (isBlocked(track)) {
+                    future.complete(new LoadResult.Blocked(track));
+                    return;
+                }
                 cache.put(key, track);
+                tag(track, requester);
                 get(guild).scheduler().enqueue(track);
                 future.complete(new LoadResult.Single(track, false));
             }
@@ -148,14 +185,22 @@ public final class AudioService {
                 cancelAllDisconnects(guild);
                 if (playlist.isSearchResult()) {
                     AudioTrack first = playlist.getTracks().get(0);
+                    if (isBlocked(first)) {
+                        future.complete(new LoadResult.Blocked(first));
+                        return;
+                    }
                     cache.put(key, first);
+                    tag(first, requester);
                     get(guild).scheduler().enqueue(first);
                     future.complete(new LoadResult.Single(first, false));
                 } else {
+                    int skipped = 0;
                     for (AudioTrack t : playlist.getTracks()) {
+                        if (isBlocked(t)) { skipped++; continue; }
+                        tag(t, requester);
                         get(guild).scheduler().enqueue(t);
                     }
-                    future.complete(new LoadResult.Playlist(playlist));
+                    future.complete(new LoadResult.Playlist(playlist, skipped));
                 }
             }
 
@@ -172,12 +217,65 @@ public final class AudioService {
         return future;
     }
 
+    private boolean isBlocked(AudioTrack track) {
+        if (track == null) return false;
+        var info = track.getInfo();
+        return trackBlockedFilter.test(info.title, info.author);
+    }
+
+    private static void tag(AudioTrack track, RequesterInfo requester) {
+        if (requester != null) track.setUserData(requester);
+    }
+
+    /**
+     * Hook invoked by {@link Scheduler#onTrackStart(com.sedmelluq.discord.lavaplayer.player.AudioPlayer, AudioTrack)}.
+     *
+     * Publishes the rich "Reproduciendo ahora" embed in the guild's text
+     * channel so the user gets a visible announcement on every transition
+     * (auto-advance, manual skip, panel skip, ...).
+     *
+     * Skips announcements for {@link LoopMode#TRACK} repetitions of the same
+     * identifier to avoid spamming when a single song is on loop.
+     */
+    private void publishNowPlaying(Guild guild, AudioTrack track) {
+        GuildAudio g = guilds.get(guild.getIdLong());
+        if (g == null || track == null) return;
+
+        String identifier = track.getInfo().identifier;
+        if (g.scheduler().getLoopMode() == LoopMode.TRACK
+                && identifier != null
+                && identifier.equals(g.lastAnnouncedIdentifier())) {
+            return;
+        }
+        g.setLastAnnouncedIdentifier(identifier);
+
+        MessageChannel channel = g.textChannel();
+        if (channel == null) return;
+
+        String name = null;
+        String avatar = null;
+        if (track.getUserData() instanceof RequesterInfo ri) {
+            name = ri.name();
+            avatar = ri.avatarUrl();
+        }
+        try {
+            channel.sendMessageEmbeds(EmbedFactory.nowPlaying(track, name, avatar, g.scheduler()))
+                    .queue(null,
+                            err -> log.debug("Could not announce now-playing in guild {}: {}",
+                                    guild.getId(), err.getMessage()));
+        } catch (Exception ignored) {
+            // Channel may have been deleted between checks. Best-effort.
+        }
+    }
+
     public boolean skip(Guild guild) {
         return get(guild).scheduler().skip();
     }
 
     public void clear(Guild guild) {
-        get(guild).scheduler().clear();
+        GuildAudio g = get(guild);
+        g.setLastAnnouncedIdentifier(null);
+        g.scheduler().clear();
     }
 
     // ------------------------------------------------------------------
@@ -215,6 +313,7 @@ public final class AudioService {
         cancelIdleDisconnect(guild);
         ScheduledFuture<?> task = disconnectScheduler.schedule(() -> {
             log.info("Idle timeout reached for guild {}, disconnecting.", guild.getId());
+            announceFarewell(guild, FAREWELL_IDLE);
             disconnect(guild);
         }, IDLE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         idleTasks.put(guild.getIdLong(), task);
@@ -237,9 +336,34 @@ public final class AudioService {
                 return;
             }
             log.info("Voice channel for guild {} has no humans after grace, disconnecting.", guild.getId());
+            announceFarewell(guild, FAREWELL_ALONE);
             disconnect(guild);
         }, ALONE_GRACE_SECONDS, TimeUnit.SECONDS);
         aloneTasks.put(guild.getIdLong(), task);
+    }
+
+    /**
+     * Send a goodbye message + GIF to the last text channel where the bot was
+     * invoked, mimicking the V1 behaviour. Best-effort: any failure (missing
+     * channel, missing permission, ratelimit) is logged at debug and swallowed
+     * so it never blocks the actual voice disconnect.
+     */
+    private void announceFarewell(Guild guild, String message) {
+        GuildAudio g = guilds.get(guild.getIdLong());
+        if (g == null) return;
+        var channel = g.textChannel();
+        if (channel == null) return;
+        try {
+            channel.sendMessage("\u23F9\uFE0F " + message).queue(
+                ok -> channel.sendMessage(FAREWELL_GIF).queue(
+                    null,
+                    err -> log.debug("Could not send farewell gif in guild {}: {}", guild.getId(), err.getMessage())
+                ),
+                err -> log.debug("Could not send farewell message in guild {}: {}", guild.getId(), err.getMessage())
+            );
+        } catch (Exception ignored) {
+            // Channel may have been deleted between checks. Not worth surfacing.
+        }
     }
 
     private void cancelAloneDisconnect(Guild guild) {
@@ -321,9 +445,11 @@ public final class AudioService {
     }
 
     public sealed interface LoadResult
-            permits LoadResult.Single, LoadResult.Playlist, LoadResult.NoMatches, LoadResult.Failed {
+            permits LoadResult.Single, LoadResult.Playlist, LoadResult.Blocked,
+                    LoadResult.NoMatches, LoadResult.Failed {
         record Single(AudioTrack track, boolean fromCache) implements LoadResult {}
-        record Playlist(AudioPlaylist playlist) implements LoadResult {}
+        record Playlist(AudioPlaylist playlist, int skippedBlocked) implements LoadResult {}
+        record Blocked(AudioTrack track) implements LoadResult {}
         record NoMatches() implements LoadResult {}
         record Failed(FriendlyException error) implements LoadResult {}
     }
