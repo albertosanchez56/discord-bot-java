@@ -1,193 +1,146 @@
-# BertiniBot
+# BertiniBot V2
 
-Bot de Discord en Java (JDA) con reproducción de música desde YouTube usando **LavaPlayer** + **yt-dlp**, gestión de cola, embeds bonitos, comandos con prefijo `!` y comandos *slash* `/`. Incluye utilidades como lanzar una moneda y mostrar builds (objetos) de campeones de LoL desde METAsrc.
+Bot de Discord en Java 21 sobre **JDA 5** y **Lavaplayer 2** con `youtube-source`. Reproduce musica en canales de voz, expone solo comandos slash y trae un panel de control con botones. Sin yt-dlp ni binarios embebidos.
 
-> **Nota**: Este README resume lo implementado. Se omite deliberadamente la parte de “runas”.
-
----
-
-## ✨ Funcionalidades principales
-
-* 🎵 **Reproducción de audio** en canales de voz:
-
-  * Soporte para **enlaces de YouTube** y **búsqueda por nombre** (fallback).
-  * Integración con **yt-dlp** para obtener el *stream* directo (evita muchos bloqueos que sufre LavaPlayer).
-  * **Cola de reproducción** (enqueue), *skip* (`!skip`), limpieza (`!clearList`) y listado (`!list`).
-  * **Miniaturas** y *embeds* informativos de la pista actual y de la cola.
-  * **Filtro** de títulos (ej.: bloquear temas que contengan "roxanne").
-  * **Desconexión por inactividad**: si la cola queda vacía o todos abandonan el canal, el bot programa su desconexión pasado un tiempo.
-
-* 🧠 **Mejores embeds**: mensajes enriquecidos (título, autor, duración, miniatura, enlace al vídeo, gif temático, etc.).
-
-* 🎲 **Utilidades**:
-
-  * `/moneda` (cara o cruz) con animación (GIF) y edición del mensaje tras unos segundos.
-
-* 🧩 **Arquitectura limpia**: separación en paquetes `audio`, `commands`, `listeners`, `service`, `util`, `model`.
+> Para el codigo original (V1, Java 17 + LavaPlayer 1.3 + yt-dlp), ver la carpeta [`legacy/`](legacy/).
 
 ---
 
-## 🧭 Comandos
+## Caracteristicas
 
-### Prefijo `!`
+- **Audio**: Lavaplayer 2.2.x + `youtube-source` (en proceso, sin yt-dlp ni FFmpeg). Pass-through de Opus, cero transcodificacion cuando la fuente lo permite.
+- **Cache LRU + TTL** (200 entradas, 1 h) sobre las resoluciones de YouTube. Evita reconsultar al pedir la misma cancion.
+- **Slash commands** con autocomplete en `/play` (sugiere queries previos del cache).
+- **Panel de control** con botones (`Pausa/Reanudar`, `Saltar`, `Loop`, `Mezclar`, `Parar`, `Vol -/+`). Se edita en el mismo mensaje en lugar de spamear.
+- **Loop** (off / pista / cola), **shuffle**, **seek** (`mm:ss` / `hh:mm:ss`), **volumen** 0-150 %.
+- **Auto-desconexion** por inactividad y cuando todos los humanos abandonan el canal del bot.
+- **Sin intents privilegiados**: solo `GUILD_VOICE_STATES`. Adios `MESSAGE_CONTENT`.
+- **Token por variable de entorno** (`DISCORD_TOKEN`), con fallback a `config.properties` para desarrollo.
+- **Logback** con rotacion diaria + por tamano (10 MB, 7 dias, 100 MB total).
+- **Dockerfile multi-stage** sobre `eclipse-temurin:21-jre`, ~280 MB de imagen final.
 
-* `!play <url | texto>`
+## Comandos
 
-  * Si pasas **URL de YouTube**, se usa `yt-dlp` para obtener el stream.
-  * Si pasas **texto**, se busca en YouTube y se encola el primer resultado.
-* `!skip` — Salta a la siguiente pista en la cola.
-* `!clearList` — Limpia la cola y detiene la pista actual.
-* `!list` — Muestra la cola actual (incluye *Now Playing*).
+### Musica
+| Comando | Descripcion |
+|---|---|
+| `/play <query>` | URL de YouTube o texto a buscar. Autocomplete sugiere queries del cache. |
+| `/skip` | Salta a la siguiente pista. |
+| `/queue` | Muestra la cola con `Now Playing` y proximas 15. |
+| `/clear` | Vacia la cola y detiene la reproduccion. |
+| `/loop <off\|track\|queue>` | Configura el modo de loop. |
+| `/shuffle` | Baraja la cola pendiente. |
+| `/seek <mm:ss>` | Salta a un punto de la pista actual. |
+| `/volume <0-150>` | Ajusta el volumen del player. |
+| `/panel` | Abre el panel de control con botones. |
 
-### Comandos *slash*
+### Utilidades
+| Comando | Descripcion |
+|---|---|
+| `/moneda` | Lanza una moneda con animacion. |
+| `/build <champion> [mode]` | Runas + objetos de un campeon de LoL via METAsrc. |
+| `/ping` | Latencia con la API de Discord. |
+| `/info` | Version, uptime, memoria y latencia. |
+| `/help` | Lista de comandos. |
 
-* `/moneda` — Lanza una moneda con animación y muestra el resultado.
-
-> Si usas ambos estilos (prefijo y slash), recuerda registrar los *slash commands* al arrancar (ver sección de **Arranque**).
-
----
-
-## 🏗️ Arquitectura y clases clave
+## Arquitectura
 
 ```
-src/main/java/com/main
-├─ audio/
-│  ├─ AudioTrackScheduler.java     # Cola, títulos, miniaturas, inactividad
-│  ├─ GuildMusicManager.java       # Une player + scheduler por servidor
-│  ├─ PlayerManager.java           # Singleton de LavaPlayer
-│  ├─ AudioPlayerSendHandler.java  # Puente JDA <-> LavaPlayer
-│  └─ YtDlpManager.java            # Invoca yt-dlp (título, videoId, url directa)
-│
-├─ commands/
-│  ├─ PlayCommand.java             # !play (URL o búsqueda) + embeds + filtros
-│  ├─ SkipCommand.java             # !skip
-│  ├─ CleanListCommand.java        # !clearList
-│  ├─ ListCommand.java             # !list
-│  ├─ HelpCommand.java             # /help o similar
-│  ├─ CoinFlipCommand.java         # /moneda con animación
-│  └─ BuildCommand.java            # /build (objetos desde METAsrc)
-│
-├─ listeners/
-│  ├─ CommandListener.java         # enruta slash commands a sus clases
-│  └─ VoiceChannelListener.java    # desconecta si el canal queda sin usuarios
-│
-├─ model/
-│  └─ TrackInfo.java               # record(title, directUrl, videoId)
-│
-├─ service/
-│  ├─ YtDlpService.java            # Lógica de detección URL/búsqueda + título/ID
-│  └─ MetasrcService.java          # Scraping de METAsrc (objetos + urls)
-│
-├─ util/
-│  ├─ EmbedFactory.java            # Embeds bonitos (Now Playing, Cola)
-│  └─ TrackFilter.java             # Bloqueos por título (ej. "roxanne")
-│
-└─ BertiniBot.java                 # Main, intents, registro de slash, pool yt-dlp
+bertinibot/src/main/java/com/main
+├── Bootstrap.java                 # main(): config, JDA, registro
+├── config/Config.java             # env-first, .properties fallback
+├── core/
+│   ├── SlashCommand.java          # contrato comun (+ AutoCompletable)
+│   ├── CommandRegistry.java       # registro + dispatch + autocomplete
+│   └── ComponentRouter.java       # botones por prefijo "panel:xxx"
+├── audio/
+│   ├── AudioService.java          # API publica + LavaPlayerManager + cache
+│   ├── GuildAudio.java            # estado por guild
+│   ├── Scheduler.java             # cola, loop, shuffle, callbacks
+│   ├── ResolveCache.java          # LRU + TTL
+│   └── OpusSendHandler.java       # puente JDA <-> Lavaplayer
+├── commands/                      # Slash commands
+├── panel/                         # Panel: embed, botones, dispatcher
+├── filters/TrackFilter.java       # bloqueo por substring (CSV en env)
+├── service/MetasrcService.java    # scraping LoL builds
+├── util/
+│   ├── EmbedFactory.java
+│   └── AsyncHttp.java             # HttpClient compartido con virtual threads
+└── listeners/VoiceChannelListener.java
 ```
 
-### Flujo de reproducción (resumen)
+## Requisitos
 
-1. `!play <algo>`
-2. `PlayCommand` detecta si es **URL** o **texto**.
-3. Llama a `YtDlpService` / `YtDlpManager` para: **título**, **videoId**, **url directa**.
-4. `PlayerManager` carga el `directUrl`; `AudioTrackScheduler.queue(...)` encola y/o reproduce.
-5. `AudioTrackScheduler` maneja fin de pista, pasa a la siguiente y programa **desconexión por inactividad** si no quedan canciones.
-6. `EmbedFactory` arma los embeds (*Now Playing*, Cola, miniaturas, enlaces, etc.).
+- **Java 21** (Temurin / Adoptium recomendado).
+  ```powershell
+  winget install EclipseAdoptium.Temurin.21.JDK
+  ```
+- **Maven NO hace falta**: el proyecto incluye Maven Wrapper (`mvnw` / `mvnw.cmd`) que se autodescarga al primer uso.
+- Un **bot de Discord** con su token. En el Developer Portal NO hace falta activar ningun intent privilegiado.
 
----
+> Windows: si tienes JDK 17 instalado tambien (por compatibilidad con el legacy), asegurate de que la sesion donde compilas usa el 21:
+> ```powershell
+> $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-21.0.11.10-hotspot"
+> $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+> ```
 
-## 🧰 Requisitos
+## Configuracion
 
-* **Java 17**
-* **Maven**
-* **yt-dlp** en el PATH del sistema (o integrarlo como binario en recursos y extraerlo al arranque).
-* **FFmpeg** instalado (recomendado; yt-dlp lo sugiere para mejor compatibilidad de formatos).
-* **Token de Discord** válido.
+Variables de entorno (todas leidas tambien desde `config.properties` como fallback de desarrollo):
 
----
+| Variable | Obligatoria | Descripcion |
+|---|---|---|
+| `DISCORD_TOKEN` | Si | Token del bot. |
+| `BLOCKED_TITLES` | No | CSV de substrings a bloquear en titulos. Vacio = no bloquea nada. |
+| `LOG_PATH` | No | Carpeta para los logs rotativos. Default: `logs/`. |
 
-## ⚙️ Configuración
+Para desarrollo local copia `src/main/resources/config.properties.example` a `src/main/resources/config.properties` y rellena `discord.token`. Ese fichero esta gitignored.
 
-1. Crea un archivo `config.properties` (o tu mecanismo actual) con tu **DISCORD\_TOKEN**.
-2. En el **Portal de Desarrolladores** de Discord (tu aplicación > *Bot*):
+## Ejecutar
 
-   * Activa *Privileged Gateway Intents* necesarios (mensajes, contenido, voz).
-   * Permite *Message Content Intent* si usas prefijo `!`.
-   * Asegura permisos de **Enviar Mensajes**, **Insertar Embeds** y **Adjuntar Archivos**.
-3. Instala **yt-dlp** y **ffmpeg** en el servidor/máquina donde corre el bot:
+### Local (Maven Wrapper)
 
-   * Windows: `winget install yt-dlp.yt-dlp` y `winget install Gyan.FFmpeg`
-   * Linux: `pipx install yt-dlp` o paquete de la distro; `sudo apt install ffmpeg`.
+```powershell
+cd bertinibot
+.\mvnw.cmd clean package
+$env:DISCORD_TOKEN = "tu_token"
+java -jar target\bertinibot-2.0.0.jar
+```
 
----
+En Linux/Mac es lo mismo con `./mvnw clean package`.
 
-## ▶️ Arranque
+> El proyecto incluye `.mvn/jvm.config` con `-Djavax.net.ssl.trustStoreType=WINDOWS-ROOT` para que Maven use el truststore de Windows. Esto evita el clasico `unable to find valid certification path` cuando un antivirus o proxy hace inspeccion HTTPS. En Linux/Mac esa opcion se ignora silenciosamente, asi que no molesta.
 
-Compila *fat-jar* con Maven (assembly plugin):
+### Docker
 
 ```bash
-mvn clean package
-java -jar target/bertinibot-1.0-SNAPSHOT-jar-with-dependencies.jar
+cd bertinibot
+DISCORD_TOKEN=tu_token docker compose up -d --build
+docker compose logs -f
 ```
 
-Registra *slash commands* al iniciar (`BertiniBot.registerSlashCommands()` ya lo hace). Tardan unos segundos en propagarse.
+La imagen final pesa unos ~280 MB (JRE 21 + el shaded jar). El contenedor monta `./logs` como volumen para que la rotacion persista.
 
-Para **invitar** el bot (si es *público*), usa la URL OAuth2 con *scopes* `bot applications.commands` y los permisos que necesites.
+## Notas de seguridad
 
-> Si el bot es **privado**, sólo el propietario puede invitarlo desde el portal (no hay “default authorization link”).
+- El token del V1 se subio inicialmente al repo via un `.gitignore` mal formateado. Si todavia no lo has hecho, **regeneralo** en el Developer Portal de Discord antes de desplegar el V2.
+- En el V2 el token se lee preferentemente de la env var `DISCORD_TOKEN` y `config.properties` esta cubierto por `**/config.properties` en el `.gitignore` raiz.
 
----
+## Hosting recomendado
 
-## 🚨 Solución de problemas
+Para un solo servidor:
 
-* **`CreateProcess error=2 (yt-dlp no encontrado)`**
+1. PC siempre encendido + Docker o servicio Windows (NSSM) - la opcion gratuita y con IP residencial (sin bloqueos de YouTube).
+2. Raspberry Pi 4/5 en casa - 5 W de consumo, 24/7 sin pagar VPS.
+3. VPS pequeno (Hetzner CX22, Oracle Free Tier ARM). Si vas por aqui, ten previstas **cookies de YouTube** porque tarde o temprano la IP del datacenter se bloquea.
 
-  * Asegúrate de tener `yt-dlp` instalado y en el **PATH**. Reinicia la consola/IDE tras instalar.
+## Codigo legacy (V1)
 
-* **`WARNING: ffmpeg not found`**
+El proyecto original esta en `legacy/`, con su propio `pom.xml` y su README local. Sigue siendo compilable con `mvn -f legacy/pom.xml package`, pero LavaPlayer 1.3.77 esta abandonado y se rompera con cambios futuros de YouTube. No lo uses para nada nuevo.
 
-  * Instala **FFmpeg**. Aunque a veces reproduce sin él, algunos formatos serán peores sin FFmpeg.
+## Roadmap futuro
 
-* **Títulos como `Unknown title` o enlace `https://youtu.be/ERROR:`**
-
-  * Revisa que `YtDlpService`/`YtDlpManager` obtenga bien `videoId` (si es búsqueda vs URL directa).
-  * No sobrescribas metadata con textos de error en los embeds.
-
-* **No se ven imágenes en embeds**
-
-  * El bot necesita permisos para *Embed Links* / *Attach Files*.
-  * Evita enlaces con hotlink "+ raros" (Tenor suele fallar en embeds; usa Giphy/Gfycat o attachments).
-
-* **Se desconecta mientras hay música** (tras `!skip`)
-
-  * Asegúrate de **cancelar** el *idle task* cuando se encola o empieza una nueva pista (tu `AudioTrackScheduler` ya lo hace en `queue()` y en `skipTrack()`).
-
-* **Tras vaciar la cola, no se desconecta**
-
-  * Verifica que en `onTrackEnd()` programe la desconexión si `queue` está vacía (y no hay `mayStartNext`).
-
----
-
-## 🛣️ Roadmap / Ideas futuras
-
-* **Panel de control** con botones (componentes interactivos) para *pause/resume/skip/loop/volume*.
-* **Guardar sonidos** enviados por usuarios (.mp3) para un *soundboard* y reproducirlos.
-* **Soporte de listas** (YouTube playlists) con paginación al encolar.
-* **Búsqueda mejorada** (`ytsearch:` multiresultado → menú de selección por botones).
-* **Despliegue** en VPS/Docker con *systemd* y logs rotativos.
-* **Spotify**: mapping de pistas/playlists a YouTube (sólo metadatos; no reproducir contenido cifrado de Spotify).
-
----
-
-## 📄 Licencias / Notas
-
-* Respeta los **TOS de Discord** y las políticas de YouTube/Google.
-
----
-
-## 🙌 Créditos
-
-* [JDA](https://github.com/discord-jda/JDA)
-* [LavaPlayer](https://github.com/sedmelluq/lavaplayer)
-* [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-* [FFmpeg](https://ffmpeg.org/)
+- Spotify -> YouTube (mapeo de metadata).
+- Persistencia (SQLite): historial, replay de las ultimas N.
+- Filtros de audio (bass boost, nightcore) via Lavalink como nodo separado.
+- Tests de integracion con mock de Discord.

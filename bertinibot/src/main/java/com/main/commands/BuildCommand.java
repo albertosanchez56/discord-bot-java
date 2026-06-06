@@ -1,175 +1,172 @@
 package com.main.commands;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+import javax.imageio.ImageIO;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.main.core.SlashCommand;
+import com.main.service.MetasrcService;
+import com.main.util.AsyncHttp;
+
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
-import net.dv8tion.jda.api.hooks.ListenerAdapter;
-import net.dv8tion.jda.api.interactions.commands.build.CommandData;
-import net.dv8tion.jda.api.interactions.commands.build.Commands;
-import net.dv8tion.jda.api.utils.FileUpload;
-import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
-
-import com.main.json.JSONReader;
-import com.main.service.MetasrcService;
-
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Optional;
-
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.awt.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
+import net.dv8tion.jda.api.utils.FileUpload;
 
 /**
- * Comando slash /build <champion> [mode]
+ * /build &lt;champion&gt; [mode] - fetches a LoL build from METAsrc and posts
+ * runes + items as composed PNGs.
+ *
+ * V2 improvements over V1: parallel icon downloads (virtual threads) via the
+ * shared {@link AsyncHttp} client, PNGs written to temp files (no cwd
+ * pollution) and embeds composed in memory.
  */
-public class BuildCommand extends ListenerAdapter implements Command {
+public final class BuildCommand implements SlashCommand {
 
-    public static CommandData getCommandData() {
-        return Commands.slash("build", "Muestra runas y objetos de un campeón usando METAsrc")
-                .addOption(OptionType.STRING, "champion", "Clave del campeón (ej. zed)", true)
+    private static final Logger log = LoggerFactory.getLogger(BuildCommand.class);
+    private final MetasrcService metasrc = new MetasrcService();
+
+    @Override
+    public SlashCommandData data() {
+        return Commands.slash("build", "Muestra runas y objetos de un campeon usando METAsrc")
+                .addOption(OptionType.STRING, "champion", "Clave del campeon (ej. zed)", true)
                 .addOption(OptionType.STRING, "mode", "Modo (classic, aram, urf)", false);
     }
 
-    @Override public String getName()        { return "build"; }
-    @Override public String getDescription() { return "Muestra build de un campeón usando METAsrc"; }
-
     @Override
-    public void executeSlash(SlashCommandInteractionEvent event) {
-        if (!event.getName().equals("build")) return;
-
+    public void execute(SlashCommandInteractionEvent event) {
         String champ = event.getOption("champion").getAsString().trim().toLowerCase();
-        String mode  = event.getOption("mode") != null
+        String mode = event.getOption("mode") != null
                 ? event.getOption("mode").getAsString().trim().toLowerCase()
                 : "classic";
 
         event.deferReply().queue();
+
         try {
-            MetasrcService.Build build = new MetasrcService().fetchBuild(champ, mode);
+            MetasrcService.Build build = metasrc.fetchBuild(champ, mode);
 
-            // 1) Crear imágenes en rejilla (runes más grandes para que luzcan)
             File runesFile = null;
-            if (!build.runeUrls.isEmpty()) {
-                // iconos grandes y en 2 filas aprox (5 por fila)
-                runesFile = createGridImage(build.runeUrls, "runes.png",
-                        /*iconSize*/56, /*gap*/6, /*perRow*/5);
+            if (!build.runeUrls().isEmpty()) {
+                runesFile = createGridImage(build.runeUrls(), "runes", 56, 6, 5);
             }
-
             File itemsFile = null;
-            if (!build.itemUrls.isEmpty()) {
-                // iconos típicos de item 42px, 6 por fila
-                itemsFile = createGridImage(build.itemUrls, "items.png",
-                        /*iconSize*/42, /*gap*/6, /*perRow*/6);
+            if (!build.itemUrls().isEmpty()) {
+                itemsFile = createGridImage(build.itemUrls(), "items", 42, 6, 6);
             }
 
-            // 2) Preparar uploads
             List<FileUpload> uploads = new ArrayList<>();
-            if (runesFile != null) uploads.add(FileUpload.fromData(runesFile, "runes.png"));
-            if (itemsFile != null) uploads.add(FileUpload.fromData(itemsFile, "items.png"));
-
-            // 3) Embeds separados para que ambas imágenes se vean grandes
-            List<net.dv8tion.jda.api.entities.MessageEmbed> embeds = new ArrayList<>();
+            List<MessageEmbed> embeds = new ArrayList<>();
 
             if (runesFile != null) {
-                EmbedBuilder ebRunes = new EmbedBuilder()
-                        .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") · 🔱 Runas")
+                uploads.add(FileUpload.fromData(runesFile, "runes.png"));
+                embeds.add(new EmbedBuilder()
+                        .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") - Runas")
                         .setColor(new Color(0x00ADEF))
-                        .setImage("attachment://runes.png"); // imagen principal, grande
-                embeds.add(ebRunes.build());
+                        .setImage("attachment://runes.png")
+                        .build());
             }
-
             if (itemsFile != null) {
-                EmbedBuilder ebItems = new EmbedBuilder()
-                        .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") · 🛡️ Objetos")
+                uploads.add(FileUpload.fromData(itemsFile, "items.png"));
+                embeds.add(new EmbedBuilder()
+                        .setTitle("Build de " + champ + " (" + mode.toUpperCase() + ") - Objetos")
                         .setColor(new Color(0x00ADEF))
-                        .setImage("attachment://items.png"); // imagen principal, grande
-                embeds.add(ebItems.build());
+                        .setImage("attachment://items.png")
+                        .build());
             }
 
             if (uploads.isEmpty()) {
-                event.getHook().sendMessage("❌ No pude encontrar runas ni objetos para ese campeón/modo.").queue();
+                event.getHook().sendMessage("No pude encontrar runas ni objetos para ese campeon/modo.").queue();
                 return;
             }
 
-            event.getHook()
-                    .sendFiles(uploads)
-                    .addEmbeds(embeds)
-                    .queue();
-
+            final File runesToClean = runesFile;
+            final File itemsToClean = itemsFile;
+            event.getHook().sendFiles(uploads).addEmbeds(embeds).queue(
+                    ok -> cleanup(runesToClean, itemsToClean),
+                    err -> cleanup(runesToClean, itemsToClean));
         } catch (Exception e) {
-            event.getHook()
-                    .sendMessage("❌ Error al obtener la build: " + e.getMessage())
-                    .queue();
+            log.warn("/build failed for champ={} mode={}: {}", champ, mode, e.getMessage());
+            event.getHook().sendMessage("Error al obtener la build: " + e.getMessage()).queue();
         }
     }
 
-    /**
-     * Descarga y compone una rejilla de imágenes.
-     *
-     * @param urls    URLs de iconos
-     * @param file    nombre del fichero de salida
-     * @param size    tamaño de icono (cuadrado) en px
-     * @param gap     separación entre iconos en px
-     * @param perRow  cuántos iconos por fila
-     */
-    private File createGridImage(List<String> urls, String file, int size, int gap, int perRow) throws Exception {
-        if (urls == null || urls.isEmpty()) return null;
-
+    private File createGridImage(List<String> urls, String namePrefix,
+                                 int size, int gap, int perRow) throws Exception {
         int n = urls.size();
         int rows = (int) Math.ceil(n / (double) perRow);
         int cols = Math.min(n, perRow);
 
-        int width  = cols * size + (cols - 1) * gap;
+        int width = cols * size + (cols - 1) * gap;
         int height = rows * size + (rows - 1) * gap;
+
+        List<CompletableFuture<BufferedImage>> futures = new ArrayList<>(n);
+        for (String url : urls) futures.add(downloadAsync(url));
 
         BufferedImage canvas = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = canvas.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-
-        for (int i = 0; i < n; i++) {
-            int r = i / perRow;
-            int c = i % perRow;
-            int x = c * (size + gap);
-            int y = r * (size + gap);
-
-            BufferedImage icon = safeDownload(urls.get(i));
-            if (icon != null) {
-                g.drawImage(icon, x, y, size, size, null);
+        try {
+            for (int i = 0; i < n; i++) {
+                BufferedImage icon = futures.get(i).join();
+                if (icon == null) continue;
+                int r = i / perRow;
+                int c = i % perRow;
+                g.drawImage(icon, c * (size + gap), r * (size + gap), size, size, null);
             }
+        } finally {
+            g.dispose();
         }
-        g.dispose();
 
-        File out = new File(file);
+        File out = Files.createTempFile("bertinibot-" + namePrefix + "-", ".png").toFile();
+        out.deleteOnExit();
         ImageIO.write(canvas, "png", out);
         return out;
     }
 
-    /** Descarga una imagen con User-Agent y timeouts. Devuelve null si falla. */
-    private BufferedImage safeDownload(String urlStr) {
-        try {
-            URL url = new URL(urlStr.startsWith("//") ? "https:" + urlStr : urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-            conn.setConnectTimeout(7000);
-            conn.setReadTimeout(7000);
-            try (InputStream in = conn.getInputStream()) {
-                return ImageIO.read(in);
+    private CompletableFuture<BufferedImage> downloadAsync(String rawUrl) {
+        String url = rawUrl.startsWith("//") ? "https:" + rawUrl : rawUrl;
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(8))
+                .header("User-Agent", "Mozilla/5.0 (BertiniBot)")
+                .GET()
+                .build();
+        return AsyncHttp.client()
+                .sendAsync(req, HttpResponse.BodyHandlers.ofByteArray())
+                .thenApply(resp -> {
+                    if (resp.statusCode() != 200) return null;
+                    try {
+                        return ImageIO.read(new ByteArrayInputStream(resp.body()));
+                    } catch (Exception ex) {
+                        return null;
+                    }
+                })
+                .exceptionally(ex -> null);
+    }
+
+    private void cleanup(File... files) {
+        for (File f : files) {
+            if (f != null) {
+                try { Files.deleteIfExists(f.toPath()); } catch (Exception ignored) { }
             }
-        } catch (Exception ignored) {
-            return null;
         }
     }
 }

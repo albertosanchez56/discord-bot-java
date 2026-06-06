@@ -1,141 +1,157 @@
 package com.main.util;
 
-import com.main.audio.AudioTrackScheduler;
-import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
-import net.dv8tion.jda.api.EmbedBuilder;
-import net.dv8tion.jda.api.entities.MessageEmbed;
-import net.dv8tion.jda.api.entities.User;
-
 import java.awt.Color;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 
+import com.main.audio.Scheduler;
+import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
+import com.sedmelluq.discord.lavaplayer.track.AudioTrackInfo;
+
+import net.dv8tion.jda.api.EmbedBuilder;
+import net.dv8tion.jda.api.entities.MessageEmbed;
+
 /**
- * Fabrica de embeds para Now Playing y Queue.
+ * Factory for the embeds the bot uses across slash commands and panel updates.
  */
-public class EmbedFactory {
-    /**
-     * Genera un embed detallado de la pista en reproducción.
-     */
-    public static MessageEmbed nowPlayingEmbed(AudioTrackScheduler scheduler, User requester, String videoId, String authorIconUrl) {
-        AudioTrack now = scheduler.getPlayer().getPlayingTrack();
-        String title = now != null
-            ? scheduler.getTitleMap().getOrDefault(now, now.getInfo().title)
-            : "_Nada reproduciéndose_";
-        String author = now != null ? now.getInfo().author : "";
-        long durationMs = now != null ? now.getDuration() : 0;
+public final class EmbedFactory {
 
-        String thumbUrl = videoId != null
-            ? "https://img.youtube.com/vi/" + videoId + "/hqdefault.jpg"
-            : null;
+    private static final Color NOW_PLAYING_GREEN = new Color(0x1DB954);
+    private static final Color ENQUEUED_GREEN = new Color(0x00C853);
+    private static final Color QUEUE_PURPLE = new Color(0x6A0DAD);
+    private static final Color PANEL_BLUE = new Color(0x3498DB);
+    private static final int QUEUE_PREVIEW_LIMIT = 15;
 
-        EmbedBuilder eb = new EmbedBuilder()
-            .setAuthor(
-                "Reproduciendo en BertiniBot",
-                videoId != null ? "https://youtu.be/" + videoId : null,
-                null
-            )
-            .setTitle(title)
-            .setDescription("**Artista:** " + author + "\n" +
-                            "**Duración:** " + formatTime(durationMs))
-            .setColor(new Color(0x1DB954))
-            .setTimestamp(Instant.now())
-            .setFooter("Pedido por " + requester.getName(), requester.getEffectiveAvatarUrl());
+    private EmbedFactory() {}
 
-        if (thumbUrl != null) eb.setThumbnail(thumbUrl);
+    public static MessageEmbed nowPlaying(AudioTrack track, String requesterName, String requesterAvatar) {
+        AudioTrackInfo info = track.getInfo();
+        EmbedBuilder eb = baseTrackEmbed(track, NOW_PLAYING_GREEN, "Reproduciendo")
+                .setDescription("**Artista:** " + nullSafe(info.author) + "\n"
+                              + "**Duracion:** " + formatTime(info.length));
+        if (requesterName != null) eb.setFooter("Pedido por " + requesterName, safeUrl(requesterAvatar));
         return eb.build();
     }
 
-    /**
-     * Genera un embed anunciando la pista encolada.
-     */
-    public static MessageEmbed enqueuedEmbed(
-        String addedTitle,
-        String addedArtist,
-        long addedDurationMs,
-        String addedVideoId,
-        String requesterName,
-        String requesterAvatarUrl
-    ) {
-        String thumb = addedVideoId != null
-            ? "https://img.youtube.com/vi/" + addedVideoId + "/mqdefault.jpg"
-            : null;
-
-        String videoId = null;
-        if (thumb != null) {
-            try {
-                String[] parts = thumb.split("/vi/");
-                if (parts.length > 1) {
-                    videoId = parts[1].split("/")[0];
-                }
-            } catch (Exception ignore) {
-                videoId = null;
-            }
-        }
-
-        EmbedBuilder eb = new EmbedBuilder()
-        .setAuthor(
-                "Reproduciendo en BertiniBot",
-                videoId != null ? "https://youtu.be/" + videoId : null,
-                "https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDN5azNpdGtsb3ZtN29pbnE0M2x4YnkweGNmdHNxNnhwaXQ4NXduaCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/j3gsT2RsH9K0w/giphy.gif"
-            )
-            .setTitle("" + addedTitle)
-            .setDescription("**Artista:** " + addedArtist + "\n" +
-                            "**Duración:** " + formatTime(addedDurationMs))
-            .setColor(new Color(0x00C853))
-            .setTimestamp(Instant.now())
-            .setFooter("Pedido por " + requesterName, requesterAvatarUrl);
-
-        if (thumb != null) eb.setThumbnail(thumb);
+    public static MessageEmbed enqueued(AudioTrack track, int positionInQueue,
+                                        String requesterName, String requesterAvatar) {
+        AudioTrackInfo info = track.getInfo();
+        String pos = positionInQueue > 0 ? "\n**Posicion en cola:** " + positionInQueue : "";
+        EmbedBuilder eb = baseTrackEmbed(track, ENQUEUED_GREEN, "En cola")
+                .setDescription("**Artista:** " + nullSafe(info.author) + "\n"
+                              + "**Duracion:** " + formatTime(info.length)
+                              + pos);
+        if (requesterName != null) eb.setFooter("Pedido por " + requesterName, safeUrl(requesterAvatar));
         return eb.build();
     }
 
-    /**
-     * Genera un embed de la cola con Now Playing arriba.
-     */
-    public static MessageEmbed queueWithNowPlayingEmbed(
-        AudioTrackScheduler scheduler,
-        String currentTitle
-    ) {
-        List<String> titles = scheduler.getQueueTitles();
+    public static MessageEmbed queue(Scheduler scheduler) {
+        AudioTrack now = scheduler.nowPlaying();
+        List<AudioTrack> upcoming = scheduler.snapshot();
+
         EmbedBuilder eb = new EmbedBuilder()
-            .setTitle("🎶 Cola de reproducción")
-            .setColor(new Color(0x6A0DAD));
+                .setTitle("Cola de reproduccion")
+                .setColor(QUEUE_PURPLE);
 
-        // Now Playing
-        eb.addField("▶️ Now Playing", currentTitle, false);
+        eb.addField("Now Playing",
+                now != null ? now.getInfo().title : "_Nada_",
+                false);
 
-        if (titles.isEmpty()) {
-            eb.addField("Próximas pistas", "_La cola está vacía._", false);
+        if (upcoming.isEmpty()) {
+            eb.addField("Proximas pistas", "_La cola esta vacia._", false);
         } else {
             StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < titles.size(); i++) {
+            int max = Math.min(upcoming.size(), QUEUE_PREVIEW_LIMIT);
+            for (int i = 0; i < max; i++) {
                 sb.append("**").append(i + 1).append(".** ")
-                  .append(titles.get(i)).append("\n");
+                  .append(upcoming.get(i).getInfo().title).append('\n');
             }
-            eb.addField("Próximas pistas", sb.toString(), false);
+            if (upcoming.size() > max) {
+                sb.append("_...y ").append(upcoming.size() - max).append(" pista(s) mas._");
+            }
+            eb.addField("Proximas pistas", sb.toString(), false);
         }
 
-        eb.setFooter("Total: " + titles.size() + " pista(s)");
+        eb.setFooter("Modo loop: " + scheduler.getLoopMode() + " | Volumen: " + scheduler.getVolume()
+                   + " | Total: " + upcoming.size() + " pista(s) en cola");
         return eb.build();
     }
 
-    /**
-     * Formatea milisegundos a HH:mm:ss o mm:ss.
-     */
-    private static String formatTime(long millis) {
-        Duration d = Duration.ofMillis(millis);
-        long hours = d.toHours();
-        int minutes = d.toMinutesPart();
-        int seconds = d.toSecondsPart();
-        if (hours > 0) {
-            return String.format("%d:%02d:%02d", hours, minutes, seconds);
+    public static MessageEmbed panel(Scheduler scheduler) {
+        AudioTrack now = scheduler.nowPlaying();
+        EmbedBuilder eb = new EmbedBuilder()
+                .setTitle("Panel de control")
+                .setColor(PANEL_BLUE);
+
+        if (now == null) {
+            eb.setDescription("_Nada sonando ahora mismo._");
         } else {
-            return String.format("%02d:%02d", minutes, seconds);
+            AudioTrackInfo info = now.getInfo();
+            String thumb = thumbnailFor(now);
+            if (thumb != null) eb.setThumbnail(thumb);
+
+            String url = safeUrl(info.uri);
+            String title = url != null ? "[" + info.title + "](" + url + ")" : info.title;
+
+            eb.setDescription("**" + title + "**\n"
+                            + "Artista: " + nullSafe(info.author) + "\n"
+                            + "Progreso: " + formatTime(now.getPosition()) + " / " + formatTime(info.length));
+        }
+
+        int queued = scheduler.snapshot().size();
+        eb.addField("Cola", queued == 0 ? "vacia" : queued + " pista(s)", true);
+        eb.addField("Loop", scheduler.getLoopMode().name(), true);
+        eb.addField("Volumen", scheduler.getVolume() + "%", true);
+        return eb.build();
+    }
+
+    public static String formatTime(long millis) {
+        if (millis <= 0) return "stream";
+        Duration d = Duration.ofMillis(millis);
+        long h = d.toHours();
+        int m = d.toMinutesPart();
+        int s = d.toSecondsPart();
+        if (h > 0) return String.format("%d:%02d:%02d", h, m, s);
+        return String.format("%02d:%02d", m, s);
+    }
+
+    private static EmbedBuilder baseTrackEmbed(AudioTrack track, Color color, String authorLabel) {
+        AudioTrackInfo info = track.getInfo();
+        EmbedBuilder eb = new EmbedBuilder()
+                .setAuthor(authorLabel, safeUrl(info.uri), null)
+                .setTitle(info.title, safeUrl(info.uri))
+                .setColor(color);
+        String thumb = thumbnailFor(track);
+        if (thumb != null) eb.setThumbnail(thumb);
+        return eb;
+    }
+
+    private static String nullSafe(String s) {
+        return s == null || s.isBlank() ? "_Desconocido_" : s;
+    }
+
+    private static String safeUrl(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            java.net.URI u = java.net.URI.create(s);
+            String scheme = u.getScheme();
+            if (scheme == null) return null;
+            if (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https")) return null;
+            return s;
+        } catch (Exception e) {
+            return null;
         }
     }
-}
 
+    private static String thumbnailFor(AudioTrack track) {
+        AudioTrackInfo info = track.getInfo();
+        if (info.artworkUrl != null && !info.artworkUrl.isBlank()) {
+            return info.artworkUrl;
+        }
+        String src = track.getSourceManager() != null ? track.getSourceManager().getSourceName() : "";
+        if ("youtube".equalsIgnoreCase(src) && info.identifier != null) {
+            return "https://img.youtube.com/vi/" + info.identifier + "/hqdefault.jpg";
+        }
+        return null;
+    }
+}

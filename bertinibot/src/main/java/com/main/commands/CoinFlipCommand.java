@@ -1,65 +1,59 @@
 package com.main.commands;
 
-import net.dv8tion.jda.api.EmbedBuilder;
-import net.dv8tion.jda.api.entities.MessageEmbed;
-import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
-import net.dv8tion.jda.api.hooks.ListenerAdapter;
-
 import java.awt.Color;
 import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import com.main.core.SlashCommand;
 
-public class CoinFlipCommand implements Command {
+import net.dv8tion.jda.api.EmbedBuilder;
+import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
+
+public final class CoinFlipCommand implements SlashCommand {
+
+    private static final String SPIN_GIF =
+            "https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExeWVmemxvZng1ajdyd25rbTM3NG05eHFndWJiYmR3bHBxcGZndDFoYiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q0ejq5xiOChlS/giphy.gif";
+    private static final String HEADS_GIF =
+            "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZTVjZjdwM3k4MzNhcmljZmVxaGpha2ozdmxvdzkydHFhOHdsdHJ2byZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l0MYt5jPR6QX5pnqM/giphy.gif";
+    private static final String TAILS_GIF =
+            "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExZnI4aW9kNzJyYnpwY2d0cWt6N2xocXE3NDJkam9maGs4cG0wcThteSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/IglQkzvuewsoD6E1Pj/giphy.gif";
 
     private final Random random = new Random();
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "coinflip-scheduler");
+        t.setDaemon(true);
+        return t;
+    });
 
     @Override
-    public String getName() {
-        return "moneda";
+    public SlashCommandData data() {
+        return Commands.slash("moneda", "Lanza una moneda al aire (cara o cruz).");
     }
 
     @Override
-    public String getDescription() {
-       return"lanza una moneda.";
-    }
+    public void execute(SlashCommandInteractionEvent event) {
+        MessageEmbed spin = new EmbedBuilder()
+                .setTitle("Lanzando moneda...")
+                .setColor(Color.LIGHT_GRAY)
+                .setImage(SPIN_GIF)
+                .setFooter("Cara o cruz")
+                .build();
 
-    @Override
-    public void executeSlash(SlashCommandInteractionEvent event) {
-         EmbedBuilder spinEb = new EmbedBuilder()
-            .setTitle("🪙 Lanzando moneda...")
-            .setColor(Color.LIGHT_GRAY)
-            .setImage("https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExeWVmemxvZng1ajdyd25rbTM3NG05eHFndWJiYmR3bHBxcGZndDFoYiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q0ejq5xiOChlS/giphy.gif")
-            .setFooter("Próximamente: Cara o Cruz!");
-
-        // Responder con el embed inicial y luego editar
-        event.replyEmbeds(spinEb.build()).queue(response -> {
-            // Obtener el mensaje enviado
-            response.retrieveOriginal().queue(message -> {
-                // Esperar 3 segundos para simular animación
+        event.replyEmbeds(spin).queue(hook -> hook.retrieveOriginal().queue(msg ->
                 scheduler.schedule(() -> {
-                    boolean isHeads = random.nextBoolean();
-                    String resultText = isHeads ? "**Cara!**" : "**Cruz!**";
-                    String resultGif = isHeads
-                        ? "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExZTVjZjdwM3k4MzNhcmljZmVxaGpha2ozdmxvdzkydHFhOHdsdHJ2byZlcD12MV9naWZzX3NlYXJjaCZjdD1n/l0MYt5jPR6QX5pnqM/giphy.gif"
-                        : "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExZnI4aW9kNzJyYnpwY2d0cWt6N2xocXE3NDJkam9maGs4cG0wcThteSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/IglQkzvuewsoD6E1Pj/giphy.gif";
-
-                    MessageEmbed resultEmbed = new EmbedBuilder()
-                        .setTitle("🪙 Resultado: " + (isHeads ?  "¡CARA!" : "¡CRUZ!"))
-                        //.setDescription(resultText)
-                        .setColor(isHeads ? Color.GREEN : Color.BLUE)
-                        .setImage(resultGif)
-                        .setFooter("¡Intenta de nuevo con /moneda!")
-                        .build();
-
-                    // Editar el mensaje original con el embed de resultado
-                    message.editMessageEmbeds(resultEmbed).queue();
-                }, 3, TimeUnit.SECONDS);
-            });
-        });
+                    boolean heads = random.nextBoolean();
+                    MessageEmbed result = new EmbedBuilder()
+                            .setTitle("Resultado: " + (heads ? "CARA" : "CRUZ"))
+                            .setColor(heads ? Color.GREEN : Color.BLUE)
+                            .setImage(heads ? HEADS_GIF : TAILS_GIF)
+                            .setFooter("Vuelve a probar con /moneda")
+                            .build();
+                    msg.editMessageEmbeds(result).queue();
+                }, 3, TimeUnit.SECONDS)));
     }
 }

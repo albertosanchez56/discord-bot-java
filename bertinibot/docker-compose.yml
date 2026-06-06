@@ -1,0 +1,26 @@
+services:
+  bertinibot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bertinibot:2.0.0
+    container_name: bertinibot
+    restart: unless-stopped
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?DISCORD_TOKEN env var is required}
+      BLOCKED_TITLES: ${BLOCKED_TITLES:-}
+      LOG_PATH: /app/logs
+      TZ: ${TZ:-Europe/Madrid}
+    volumes:
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

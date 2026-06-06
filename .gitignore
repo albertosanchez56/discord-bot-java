@@ -1,3 +1,27 @@
-# Ignorar archivo de configuración local
-config.propertiesconfig.properties
-config.properties
+# Local configuration with secrets
+**/config.properties
+.env
+.env.*
+!.env.example
+
+# Maven / build output
+target/
+*.class
+
+# Logs
+logs/
+*.log
+*.log.gz
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated artifacts that should never be tracked
+*.tmp
+*.bak

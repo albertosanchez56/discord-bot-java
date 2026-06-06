@@ -1,0 +1,19 @@
+# BertiniBot V2 - example configuration
+#
+# This file is read only as a development fallback. In production set the
+# DISCORD_TOKEN environment variable instead.
+#
+# Copy this file to "config.properties" and fill in your own values.
+# config.properties is gitignored and MUST NOT be committed.
+
+# Required - Discord bot token (Developer Portal -> Bot -> Reset Token).
+discord.token=YOUR_DISCORD_TOKEN_HERE
+
+# Optional - comma-separated list of substrings to block in track titles.
+# Matching is case-insensitive and uses 'contains'.
+# blocked.titles=roxanne,other phrase
+
+# Optional - restrict slash command registration to one guild for instant
+# updates during development (otherwise commands are global and can take up
+# to an hour to propagate).
+# discord.guild.id=123456789012345678

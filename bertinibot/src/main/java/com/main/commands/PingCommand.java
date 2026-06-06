@@ -1,23 +1,21 @@
 package com.main.commands;
 
+import com.main.core.SlashCommand;
+
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public class PingCommand implements Command{
+public final class PingCommand implements SlashCommand {
 
     @Override
-    public String getName() {
-        return "ping";
+    public SlashCommandData data() {
+        return Commands.slash("ping", "Mide la latencia con la API de Discord.");
     }
 
     @Override
-    public String getDescription() {
-       return"Checks the bot's latency to Discord's gateway.";
+    public void execute(SlashCommandInteractionEvent event) {
+        long gateway = event.getJDA().getGatewayPing();
+        event.reply("Pong. Gateway: **" + gateway + " ms**").queue();
     }
-
-    @Override
-    public void executeSlash(SlashCommandInteractionEvent event) {
-        long ping = event.getJDA().getGatewayPing();
-        event.replyFormat("Pong! Gateway Ping: %dms", ping).queue();
-    }
-    
 }

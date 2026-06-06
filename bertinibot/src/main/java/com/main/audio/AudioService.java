@@ -1,0 +1,330 @@
+package com.main.audio;
+
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler;
+import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
+import com.sedmelluq.discord.lavaplayer.player.DefaultAudioPlayerManager;
+import com.sedmelluq.discord.lavaplayer.source.AudioSourceManagers;
+import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
+import com.sedmelluq.discord.lavaplayer.track.AudioPlaylist;
+import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
+
+import dev.lavalink.youtube.YoutubeAudioSourceManager;
+
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.channel.middleman.AudioChannel;
+import net.dv8tion.jda.api.entities.channel.unions.AudioChannelUnion;
+import net.dv8tion.jda.api.managers.AudioManager;
+
+/**
+ * Public API for audio operations.
+ *
+ * Owns the singleton {@link AudioPlayerManager}, the per-guild {@link GuildAudio}
+ * registry, the resolution cache and ALL auto-disconnect schedulers (idle =
+ * music stopped; alone = bot left without humans in the voice channel).
+ *
+ * Centralising both schedulers here ensures that any playback activity cancels
+ * pending disconnects in a single place, avoiding the "join / leave / join /
+ * leave" loop caused by two independent timers fighting each other.
+ */
+public final class AudioService {
+
+    private static final Logger log = LoggerFactory.getLogger(AudioService.class);
+    private static final long IDLE_TIMEOUT_SECONDS = 60;
+    private static final long ALONE_GRACE_SECONDS = 60;
+
+    private final AudioPlayerManager playerManager = new DefaultAudioPlayerManager();
+    private final Map<Long, GuildAudio> guilds = new ConcurrentHashMap<>();
+    private final Map<Long, ScheduledFuture<?>> idleTasks = new ConcurrentHashMap<>();
+    private final Map<Long, ScheduledFuture<?>> aloneTasks = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService disconnectScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "audio-disconnect-scheduler");
+        t.setDaemon(true);
+        return t;
+    });
+    private final ResolveCache cache = new ResolveCache();
+    private volatile Consumer<Guild> onGuildUpdate = g -> {};
+
+    public AudioService() {
+        YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager(true);
+        playerManager.registerSourceManager(youtube);
+        AudioSourceManagers.registerRemoteSources(playerManager);
+        AudioSourceManagers.registerLocalSource(playerManager);
+    }
+
+    public AudioPlayerManager playerManager() { return playerManager; }
+
+    public ResolveCache cache() { return cache; }
+
+    public GuildAudio get(Guild guild) {
+        return guilds.computeIfAbsent(guild.getIdLong(), id -> {
+            GuildAudio g = new GuildAudio(id, playerManager);
+            g.scheduler().setOnIdle(() -> scheduleIdleDisconnect(guild));
+            g.scheduler().setOnChange(() -> onGuildUpdate.accept(guild));
+            return g;
+        });
+    }
+
+    public void setOnGuildUpdate(Consumer<Guild> listener) {
+        this.onGuildUpdate = listener != null ? listener : g -> {};
+    }
+
+    /**
+     * Connect to {@code channel}, idempotent if already connected to the same
+     * channel. Cancels any pending auto-disconnect because we're clearly active.
+     */
+    public void connect(Guild guild, AudioChannelUnion channel) {
+        AudioManager am = guild.getAudioManager();
+        AudioChannel current = am.getConnectedChannel();
+        am.setSendingHandler(get(guild).sendHandler());
+        am.setAutoReconnect(true);
+        if (current == null || current.getIdLong() != channel.getIdLong()) {
+            log.debug("connect(): opening voice in guild={} channel={}", guild.getId(), channel.getId());
+            am.openAudioConnection(channel);
+        }
+        cancelAllDisconnects(guild);
+        signalHumanPresenceChange(guild);
+    }
+
+    public void disconnect(Guild guild) {
+        try {
+            log.debug("disconnect(): closing voice in guild {}", guild.getId());
+            cancelAllDisconnects(guild);
+
+            GuildAudio g = guilds.get(guild.getIdLong());
+            if (g != null) {
+                // Stop any residual playback so JDA doesn't keep the voice
+                // socket open waiting for the next packet. Keep the player
+                // instance and the queue alive so future /play calls work.
+                g.player().stopTrack();
+            }
+            AudioManager am = guild.getAudioManager();
+            am.setSendingHandler(null);
+            am.closeAudioConnection();
+        } catch (Exception e) {
+            log.warn("Failed to disconnect from guild {}: {}", guild.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Resolve {@code query} (URL or text) and enqueue the resulting track(s).
+     * Cached resolutions short-circuit the network call.
+     */
+    public CompletableFuture<LoadResult> enqueue(Guild guild, String query) {
+        cancelAllDisconnects(guild);
+        String identifier = resolveIdentifier(query);
+        String key = normalizeKey(identifier);
+        Optional<AudioTrack> cached = cache.get(key);
+        if (cached.isPresent()) {
+            get(guild).scheduler().enqueue(cached.get());
+            return CompletableFuture.completedFuture(new LoadResult.Single(cached.get(), true));
+        }
+
+        CompletableFuture<LoadResult> future = new CompletableFuture<>();
+
+        playerManager.loadItem(identifier, new AudioLoadResultHandler() {
+            @Override
+            public void trackLoaded(AudioTrack track) {
+                cancelAllDisconnects(guild);
+                cache.put(key, track);
+                get(guild).scheduler().enqueue(track);
+                future.complete(new LoadResult.Single(track, false));
+            }
+
+            @Override
+            public void playlistLoaded(AudioPlaylist playlist) {
+                cancelAllDisconnects(guild);
+                if (playlist.isSearchResult()) {
+                    AudioTrack first = playlist.getTracks().get(0);
+                    cache.put(key, first);
+                    get(guild).scheduler().enqueue(first);
+                    future.complete(new LoadResult.Single(first, false));
+                } else {
+                    for (AudioTrack t : playlist.getTracks()) {
+                        get(guild).scheduler().enqueue(t);
+                    }
+                    future.complete(new LoadResult.Playlist(playlist));
+                }
+            }
+
+            @Override
+            public void noMatches() {
+                future.complete(new LoadResult.NoMatches());
+            }
+
+            @Override
+            public void loadFailed(FriendlyException ex) {
+                future.complete(new LoadResult.Failed(ex));
+            }
+        });
+        return future;
+    }
+
+    public boolean skip(Guild guild) {
+        return get(guild).scheduler().skip();
+    }
+
+    public void clear(Guild guild) {
+        get(guild).scheduler().clear();
+    }
+
+    // ------------------------------------------------------------------
+    // Auto-disconnect: idle (music stopped) + alone (no humans in channel)
+    // ------------------------------------------------------------------
+
+    /**
+     * Notify that the human population in the bot's voice channel may have
+     * changed. Schedules an "alone" disconnect if the bot is alone, cancels it
+     * otherwise.
+     */
+    public void signalHumanPresenceChange(Guild guild) {
+        AudioChannel botChannel = guild.getAudioManager().getConnectedChannel();
+        if (botChannel == null) {
+            log.debug("signalHumanPresenceChange(): bot not connected in guild {}, cancelling alone timer", guild.getId());
+            cancelAloneDisconnect(guild);
+            return;
+        }
+        boolean humans = hasHumans(botChannel);
+        log.debug("signalHumanPresenceChange(): guild={} channel={} hasHumans={} members={}",
+                guild.getId(), botChannel.getId(), humans, botChannel.getMembers().size());
+        if (humans) {
+            cancelAloneDisconnect(guild);
+        } else {
+            scheduleAloneDisconnect(guild);
+        }
+    }
+
+    public void cancelAllDisconnects(Guild guild) {
+        cancelIdleDisconnect(guild);
+        cancelAloneDisconnect(guild);
+    }
+
+    private void scheduleIdleDisconnect(Guild guild) {
+        cancelIdleDisconnect(guild);
+        ScheduledFuture<?> task = disconnectScheduler.schedule(() -> {
+            log.info("Idle timeout reached for guild {}, disconnecting.", guild.getId());
+            disconnect(guild);
+        }, IDLE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        idleTasks.put(guild.getIdLong(), task);
+    }
+
+    private void cancelIdleDisconnect(Guild guild) {
+        ScheduledFuture<?> existing = idleTasks.remove(guild.getIdLong());
+        if (existing != null && !existing.isDone()) existing.cancel(false);
+    }
+
+    private void scheduleAloneDisconnect(Guild guild) {
+        cancelAloneDisconnect(guild);
+        log.debug("scheduleAloneDisconnect(): bot is alone in guild {}, will disconnect in {}s",
+                guild.getId(), ALONE_GRACE_SECONDS);
+        ScheduledFuture<?> task = disconnectScheduler.schedule(() -> {
+            AudioChannel current = guild.getAudioManager().getConnectedChannel();
+            if (current == null) return;
+            if (hasHumans(current)) {
+                log.debug("alone-task fired but humans present, skipping");
+                return;
+            }
+            log.info("Voice channel for guild {} has no humans after grace, disconnecting.", guild.getId());
+            disconnect(guild);
+        }, ALONE_GRACE_SECONDS, TimeUnit.SECONDS);
+        aloneTasks.put(guild.getIdLong(), task);
+    }
+
+    private void cancelAloneDisconnect(Guild guild) {
+        ScheduledFuture<?> existing = aloneTasks.remove(guild.getIdLong());
+        if (existing != null && !existing.isDone()) existing.cancel(false);
+    }
+
+    private static boolean hasHumans(AudioChannel channel) {
+        return channel.getMembers().stream().anyMatch(m -> !m.getUser().isBot());
+    }
+
+    public void shutdown() {
+        disconnectScheduler.shutdownNow();
+        playerManager.shutdown();
+    }
+
+    private static boolean isUrl(String s) {
+        return s.startsWith("http://") || s.startsWith("https://");
+    }
+
+    private static String normalizeKey(String s) {
+        return s.trim().toLowerCase();
+    }
+
+    /**
+     * Build the identifier passed to Lavaplayer:
+     *
+     *  - Plain text   -> {@code ytsearch:<text>}.
+     *  - YouTube URL with both {@code v=} and {@code list=RD...} (a "Mix" /
+     *    radio playlist) -> strip the mix and return a plain video URL.
+     *    YouTube generates mixes dynamically based on the requester's account
+     *    history, so the bot would otherwise queue a random mix that doesn't
+     *    match what the user sees in their client.
+     *  - Anything else -> the URL as-is (real playlists with {@code list=PL...},
+     *    {@code list=LL...}, etc. keep working).
+     */
+    static String resolveIdentifier(String query) {
+        if (!isUrl(query)) return "ytsearch:" + query;
+        String stripped = stripYoutubeMix(query);
+        if (stripped != null) {
+            log.debug("Stripped YouTube mix from query, using video only: {}", stripped);
+            return stripped;
+        }
+        return query;
+    }
+
+    private static String stripYoutubeMix(String url) {
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String host = uri.getHost();
+            if (host == null) return null;
+            boolean isYoutube = host.endsWith("youtube.com") || host.endsWith("youtu.be");
+            if (!isYoutube) return null;
+
+            java.util.Map<String, String> params = parseQuery(uri.getRawQuery());
+            String list = params.get("list");
+            if (list == null || !list.startsWith("RD")) return null;
+
+            String videoId = params.get("v");
+            if (videoId == null && host.endsWith("youtu.be")) {
+                String path = uri.getPath();
+                if (path != null && path.length() > 1) videoId = path.substring(1);
+            }
+            if (videoId == null || videoId.isBlank()) return null;
+            return "https://www.youtube.com/watch?v=" + videoId;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static java.util.Map<String, String> parseQuery(String raw) {
+        if (raw == null || raw.isEmpty()) return java.util.Map.of();
+        java.util.Map<String, String> out = new java.util.HashMap<>();
+        for (String pair : raw.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq > 0) out.put(pair.substring(0, eq), pair.substring(eq + 1));
+        }
+        return out;
+    }
+
+    public sealed interface LoadResult
+            permits LoadResult.Single, LoadResult.Playlist, LoadResult.NoMatches, LoadResult.Failed {
+        record Single(AudioTrack track, boolean fromCache) implements LoadResult {}
+        record Playlist(AudioPlaylist playlist) implements LoadResult {}
+        record NoMatches() implements LoadResult {}
+        record Failed(FriendlyException error) implements LoadResult {}
+    }
+}

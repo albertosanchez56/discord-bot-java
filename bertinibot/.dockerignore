@@ -1,0 +1,14 @@
+target/
+.idea/
+.vscode/
+*.iml
+*.log
+logs/
+.git/
+.gitignore
+.mvn/
+mvnw
+mvnw.cmd
+
+# Never ship credentials in an image.
+src/main/resources/config.properties

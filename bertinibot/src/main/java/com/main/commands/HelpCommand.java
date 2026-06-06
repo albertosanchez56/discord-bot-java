@@ -2,49 +2,42 @@ package com.main.commands;
 
 import java.awt.Color;
 
+import com.main.core.SlashCommand;
+
 import net.dv8tion.jda.api.EmbedBuilder;
-import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public class HelpCommand implements Command{
-    
+public final class HelpCommand implements SlashCommand {
+
     @Override
-    public String getName() {
-        return "help";
+    public SlashCommandData data() {
+        return Commands.slash("help", "Lista de comandos disponibles.");
     }
 
     @Override
-    public String getDescription() {
-       return"Muestra todos los comandos";
-    }
-
-    @Override
-    public void executeSlash(SlashCommandInteractionEvent event) {
-         EmbedBuilder eb = new EmbedBuilder()
-            .setTitle("📖 Lista de Comandos")
-            .setColor(new Color(0x9400D3));
-
-        // Comandos con prefijo '!'
-        eb.addField("__Comandos de audio `!`__", "​", false);
-        eb.addField("!play <link|nombre>", "Reproduce audio desde YouTube (enlace o búsqueda).", false);
-        eb.addField("!skip", "Salta a la siguiente canción en cola.", false);
-        eb.addField("!clearList", "Limpia la cola de reproducción.", false);
-        eb.addField("!list", "Muestra la cola de reproducción actual.", false);
-
-        // Espacio
-        eb.addBlankField(false);
-
-        // Comandos Slash '/'
-        eb.addField("__Comandos Slash `/`__", "​", false);
-        eb.addField("/moneda", "Lanza una cara o cruz con animación.", false);
-        eb.addField("/ping", "Comprueba la latencia del bot.", false);
-        eb.addField("/info", "Muestra información del bot.", false);
-        eb.addField("/echo <texto>", "Repite el texto que envíes.", false);
-        eb.addField("/play <link|búsqueda>", "Reproduce audio desde YouTube usando slash command.", false);
-        
-        
-
-        MessageEmbed embed = eb.build();
-        event.replyEmbeds(embed).queue();
+    public void execute(SlashCommandInteractionEvent event) {
+        var eb = new EmbedBuilder()
+                .setTitle("Comandos disponibles")
+                .setColor(new Color(0x3498DB))
+                .addField("Musica",
+                        "`/play <url|texto>` - Reproduce / encola una pista\n"
+                      + "`/skip` - Salta a la siguiente pista\n"
+                      + "`/queue` - Muestra la cola\n"
+                      + "`/clear` - Vacia la cola y detiene\n"
+                      + "`/loop <modo>` - Loop off / pista / cola\n"
+                      + "`/shuffle` - Mezcla la cola\n"
+                      + "`/seek <mm:ss>` - Salta a una posicion en la pista\n"
+                      + "`/volume <0-150>` - Ajusta volumen\n"
+                      + "`/panel` - Panel de control con botones",
+                        false)
+                .addField("Utilidades",
+                        "`/moneda` - Lanza cara o cruz\n"
+                      + "`/build <champion> [mode]` - Build de LoL desde METAsrc\n"
+                      + "`/ping` - Latencia del bot\n"
+                      + "`/info` - Info del bot",
+                        false);
+        event.replyEmbeds(eb.build()).queue();
     }
 }

@@ -1,49 +1,60 @@
 package com.main.service;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
-
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
-/**
- * Scrapes METAsrc for League of Legends champion builds.
- *
- * Behaviour preserved from V1: first five primary runes + core items detected
- * by the highest-scoring container.
- */
-public final class MetasrcService {
+import java.util.*;
+import java.util.stream.Collectors;
 
-    public record Build(List<String> runeUrls, List<String> itemUrls) {}
+public class MetasrcService {
 
+    public static class Build {
+        public final List<String> runeUrls;
+        public final List<String> itemUrls;
+        public Build(List<String> runeUrls, List<String> itemUrls) {
+            this.runeUrls = runeUrls;
+            this.itemUrls = itemUrls;
+        }
+    }
+
+    // Ítems de inicio / utilidades que NO queremos en “core”
     private static final Set<Integer> STARTER_OR_UTILITY = Set.of(
-            1001, 1054, 1055, 1056,
-            2003, 2010, 2031, 2033,
+            1001, 1054,1055,1056,
+            2003,2010,2031,2033,
             2055, 2420,
-            2138, 2139, 2140,
-            3340, 3363, 3364
+            2138,2139,2140,
+            3340,3363,3364
     );
 
     public Build fetchBuild(String champion, String mode) throws Exception {
-        String url = "https://www.metasrc.com/lol/build/"
-                + champion.toLowerCase() + "/" + mode.toLowerCase();
-
+        String url = "https://www.metasrc.com/lol/build/" + champion.toLowerCase() + "/" + mode.toLowerCase();
         Document doc = Jsoup.connect(url)
                 .userAgent("Mozilla/5.0")
                 .referrer("https://www.google.com")
                 .timeout(15000)
                 .get();
 
-        return new Build(extractFirstFivePrimaryRunes(doc), extractCoreItems(doc));
+        // SOLO RUNAS (paso 1): 5 primeras con TU selector
+        List<String> runes = extractFirstFivePrimaryRunes(doc);
+
+        // Objetos: dejamos tu versión que ya funcionaba bien
+        List<String> items = extractCoreItems(doc);
+
+        return new Build(runes, items);
     }
 
+    /**
+     * Busca el contenedor de runas (id que termina en "-content") y dentro aplica
+     * exactamente el selector: "div:nth-child(1) > div > svg > image".
+     * Devuelve como mucho 5 URLs en el orden encontrado.
+     */
     private List<String> extractFirstFivePrimaryRunes(Document doc) {
         Element runesRoot = doc.selectFirst("div[id$=-content]");
-        if (runesRoot == null) runesRoot = doc;
+        if (runesRoot == null) {
+            // Fallback por si cambia la estructura: usar todo el doc
+            runesRoot = doc;
+        }
 
         Elements images = runesRoot.select("div:nth-child(1) > div > svg > image");
         List<String> urls = new ArrayList<>();
@@ -52,23 +63,27 @@ public final class MetasrcService {
                     e.attr("xlink:href"),
                     e.attr("href"),
                     e.attr("data-src"),
-                    e.attr("src"));
+                    e.attr("src")
+            );
             if (u == null || u.isBlank()) continue;
             urls.add(toAbs(u.trim()));
-            if (urls.size() == 5) break;
+            if (urls.size() == 5) break; // <- solo 5 primeras
         }
+        // Evitar duplicados manteniendo orden
         return urls.stream().distinct().collect(Collectors.toList());
     }
 
+    /* ===================== ÍTEMS (fila principal) ===================== */
+
     private List<String> extractCoreItems(Document doc) {
+        // Buscamos contenedores con muchos item-cards "tooltipped" y puntuamos filas
         Elements candidateRows = doc.select(
-                "div:has(> div._hmag7l.tooltipped[data-tooltip^=x-item-]), "
-              + "div._hmag7l.tooltipped[data-tooltip^=x-item-]"
+                "div:has(> div._hmag7l.tooltipped[data-tooltip^=x-item-]), " +
+                "div._hmag7l.tooltipped[data-tooltip^=x-item-]"
         );
 
         Element bestRow = null;
-        int bestScore = -1;
-        int bestCount = -1;
+        int bestScore = -1, bestCount = -1;
 
         for (Element row : candidateRows) {
             Elements tips = row.select("div._hmag7l.tooltipped[data-tooltip^=x-item-]");
@@ -93,9 +108,7 @@ public final class MetasrcService {
             int score = nonStarter * 10 + total;
 
             if (score > bestScore || (score == bestScore && total > bestCount)) {
-                bestScore = score;
-                bestCount = total;
-                bestRow = row;
+                bestScore = score; bestCount = total; bestRow = row;
             }
         }
 
@@ -110,13 +123,13 @@ public final class MetasrcService {
         return urls.stream().distinct().collect(Collectors.toList());
     }
 
+    /* ===================== Helpers ===================== */
+
     private static int parseItemIdFromTooltip(String tooltip) {
         try {
             int idx = tooltip.lastIndexOf('-');
-            return idx != -1 ? Integer.parseInt(tooltip.substring(idx + 1).trim()) : -1;
-        } catch (Exception e) {
-            return -1;
-        }
+            return (idx != -1) ? Integer.parseInt(tooltip.substring(idx + 1).trim()) : -1;
+        } catch (Exception e) { return -1; }
     }
 
     private static int parseItemIdFromSrc(String src) {
@@ -127,22 +140,18 @@ public final class MetasrcService {
                 return Integer.parseInt(src.substring(slash + 1, dot));
             }
             return -1;
-        } catch (Exception e) {
-            return -1;
-        }
+        } catch (Exception e) { return -1; }
     }
 
     private static String firstNonEmpty(String... vals) {
-        for (String v : vals) {
-            if (v != null && !v.isBlank()) return v;
-        }
+        for (String v : vals) if (v != null && !v.isBlank()) return v;
         return null;
     }
 
     private static String toAbs(String u) {
         if (u.startsWith("http")) return u;
-        if (u.startsWith("//")) return "https:" + u;
-        if (u.startsWith("/")) return "https://ddragon.leagueoflegends.com" + u;
+        if (u.startsWith("//"))   return "https:" + u;
+        if (u.startsWith("/"))    return "https://ddragon.leagueoflegends.com" + u;
         return u;
     }
 }

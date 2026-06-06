@@ -1,25 +1,27 @@
 package com.main.commands;
 
 import com.main.audio.AudioService;
+import com.main.audio.GuildAudio;
 import com.main.core.SlashCommand;
-import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
+import com.main.panel.PanelButtons;
+import com.main.util.EmbedFactory;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public final class SkipCommand implements SlashCommand {
+public final class PanelCommand implements SlashCommand {
 
     private final AudioService audio;
 
-    public SkipCommand(AudioService audio) {
+    public PanelCommand(AudioService audio) {
         this.audio = audio;
     }
 
     @Override
     public SlashCommandData data() {
-        return Commands.slash("skip", "Salta a la siguiente pista de la cola.");
+        return Commands.slash("panel", "Abre el panel de control con botones de reproduccion.");
     }
 
     @Override
@@ -29,11 +31,14 @@ public final class SkipCommand implements SlashCommand {
             event.reply("Este comando solo se puede usar en un servidor.").setEphemeral(true).queue();
             return;
         }
-        audio.skip(guild);
-        AudioTrack now = audio.get(guild).scheduler().nowPlaying();
-        String msg = now != null
-                ? "Saltado. Ahora suena: **" + now.getInfo().title + "**"
-                : "Saltado. No quedan mas pistas en la cola.";
-        event.reply(msg).queue();
+        GuildAudio g = audio.get(guild);
+        g.setTextChannel(event.getChannel());
+
+        event.replyEmbeds(EmbedFactory.panel(g.scheduler()))
+                .addComponents(
+                        PanelButtons.transportRow(g.scheduler()),
+                        PanelButtons.volumeRow(g.scheduler()))
+                .queue(hook -> hook.retrieveOriginal().queue(msg ->
+                        g.setPanel(event.getChannel().getIdLong(), msg.getIdLong())));
     }
 }

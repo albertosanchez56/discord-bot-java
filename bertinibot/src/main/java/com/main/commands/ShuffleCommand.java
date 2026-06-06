@@ -2,24 +2,23 @@ package com.main.commands;
 
 import com.main.audio.AudioService;
 import com.main.core.SlashCommand;
-import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-public final class SkipCommand implements SlashCommand {
+public final class ShuffleCommand implements SlashCommand {
 
     private final AudioService audio;
 
-    public SkipCommand(AudioService audio) {
+    public ShuffleCommand(AudioService audio) {
         this.audio = audio;
     }
 
     @Override
     public SlashCommandData data() {
-        return Commands.slash("skip", "Salta a la siguiente pista de la cola.");
+        return Commands.slash("shuffle", "Mezcla aleatoriamente la cola.");
     }
 
     @Override
@@ -29,11 +28,9 @@ public final class SkipCommand implements SlashCommand {
             event.reply("Este comando solo se puede usar en un servidor.").setEphemeral(true).queue();
             return;
         }
-        audio.skip(guild);
-        AudioTrack now = audio.get(guild).scheduler().nowPlaying();
-        String msg = now != null
-                ? "Saltado. Ahora suena: **" + now.getInfo().title + "**"
-                : "Saltado. No quedan mas pistas en la cola.";
-        event.reply(msg).queue();
+        var sched = audio.get(guild).scheduler();
+        int n = sched.snapshot().size();
+        sched.shuffle();
+        event.reply(n == 0 ? "La cola esta vacia, no hay nada que mezclar." : "Mezcladas **" + n + "** pistas.").queue();
     }
 }

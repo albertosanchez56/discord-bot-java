@@ -1,164 +1,118 @@
 package com.main.commands;
 
-import java.awt.Color;
-import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-
-import com.main.BertiniBot;
-import com.main.audio.AudioPlayerSendHandler;
-import com.main.audio.AudioTrackScheduler;
-import com.main.audio.GuildMusicManager;
-import com.main.audio.PlayerManager;
-import com.main.audio.YtDlpManager;
-import com.main.model.TrackInfo;
-import com.main.service.YtDlpService;
+import com.main.audio.AudioService;
+import com.main.audio.AudioService.LoadResult;
+import com.main.audio.GuildAudio;
+import com.main.core.SlashCommand;
+import com.main.filters.TrackFilter;
 import com.main.util.EmbedFactory;
-import com.main.util.TrackFilter;
-import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
-import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
-import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler;
-import com.sedmelluq.discord.lavaplayer.track.AudioPlaylist;
 
-import net.dv8tion.jda.api.EmbedBuilder;
+import java.util.List;
+
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.GuildVoiceState;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.User;
-import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.entities.channel.unions.AudioChannelUnion;
+import net.dv8tion.jda.api.events.interaction.command.CommandAutoCompleteInteractionEvent;
+import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.interactions.commands.OptionType;
+import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
-import net.dv8tion.jda.api.hooks.ListenerAdapter;
-import net.dv8tion.jda.api.entities.Guild;
+public final class PlayCommand implements SlashCommand, SlashCommand.AutoCompletable {
 
-public class PlayCommand extends ListenerAdapter {
-    private final YtDlpService ytDlp = new YtDlpService();
+    private final AudioService audio;
+    private final TrackFilter filter;
 
-    private static final ScheduledExecutorService IDLE_SCHEDULER = Executors.newSingleThreadScheduledExecutor();
-    private static final int IDLE_TIMEOUT_MINUTES = 5;
+    public PlayCommand(AudioService audio, TrackFilter filter) {
+        this.audio = audio;
+        this.filter = filter;
+    }
 
     @Override
-    public void onMessageReceived(MessageReceivedEvent event) {
-        String[] parts = event.getMessage().getContentRaw().split(" ", 2);
-        if (!parts[0].equalsIgnoreCase("!play") || parts.length < 2)
-            return;
+    public SlashCommandData data() {
+        return Commands.slash("play", "Reproduce audio desde YouTube (URL o busqueda).")
+                .addOption(OptionType.STRING, "query", "URL de YouTube o texto a buscar", true, true);
+    }
 
-        MessageChannel text = event.getChannel();
+    @Override
+    public void autoComplete(CommandAutoCompleteInteractionEvent event) {
+        if (!"query".equals(event.getFocusedOption().getName())) return;
+        String input = event.getFocusedOption().getValue().trim().toLowerCase();
+        if (input.length() < 2) {
+            event.replyChoiceStrings(List.of()).queue();
+            return;
+        }
+        List<String> matches = audio.cache().keysMruFirst().stream()
+                .filter(k -> k.contains(input))
+                .limit(5)
+                .toList();
+        event.replyChoiceStrings(matches).queue();
+    }
+
+    @Override
+    public void execute(SlashCommandInteractionEvent event) {
+        Guild guild = event.getGuild();
         Member member = event.getMember();
-        if (member == null || !member.getVoiceState().inAudioChannel()) {
-            text.sendMessage("¡Únete primero a un canal de voz!").queue();
+        if (guild == null || member == null) {
+            event.reply("Este comando solo se puede usar en un servidor.").setEphemeral(true).queue();
             return;
         }
 
-        AudioChannelUnion chan = member.getVoiceState().getChannel();
-        Guild guild = event.getGuild();
-        guild.getAudioManager().openAudioConnection(chan);
+        GuildVoiceState voiceState = member.getVoiceState();
+        if (voiceState == null || !voiceState.inAudioChannel()) {
+            event.reply("Tienes que estar en un canal de voz primero.").setEphemeral(true).queue();
+            return;
+        }
+        AudioChannelUnion channel = voiceState.getChannel();
+        if (channel == null) {
+            event.reply("No puedo unirme a tu canal de voz.").setEphemeral(true).queue();
+            return;
+        }
 
-        User requester = event.getAuthor();
-        long guildId = guild.getIdLong();
-        GuildMusicManager mm = PlayerManager.getInstance().getGuildMusicManager(guildId);
-        mm.setTextChannel(event.getChannel());
-        guild.getAudioManager().setSendingHandler(new AudioPlayerSendHandler(mm.player));
+        String query = event.getOption("query").getAsString();
+        User requester = event.getUser();
 
-        // Registrar callback de desconexión pasiva
-        mm.scheduler.setDisconnectCallback(() -> {
-            guild.getAudioManager().closeAudioConnection();
-            text.sendMessage("⏹️ Me desconecto por inactividad. ¡Hasta la próxima!").queue();
-            text.sendMessage("https://tenor.com/view/hasta-la-proxima-float-fly-gif-14857954").queue();
-        });
+        event.deferReply().queue();
 
-        String argument = parts[1].trim();
-        boolean isUrl = argument.matches("^https?://.*");
-        String ytdlpInput = isUrl ? argument.split("&")[0] : "ytsearch1:" + argument;
+        GuildAudio g = audio.get(guild);
+        g.setTextChannel(event.getChannel());
+        audio.connect(guild, channel);
 
-        BertiniBot.YTDLP_POOL.submit(() -> {
-            try {
-                if (isUrl) {
-                    text.sendMessage("Obteniendo información del enlace... ⏳").queue();
-                } else {
-                    text.sendMessage("🔍 Buscando '" + argument + "' en YouTube... ⏳").queue();
-                }
-
-                TrackInfo info = ytDlp.fetchTrackInfo(ytdlpInput);
-                if (TrackFilter.isBlocked(info.title())) {
-                    text.sendMessage("🚫 La canción **" + info.title() + "** está bloqueada.").queue();
-                    text.sendMessage("https://tenor.com/view/aqui-no-hay-quien-viva-gif-14069994").queue();
-
-                    // Programar desconexión tras X minutos de inactividad:
-                    IDLE_SCHEDULER.schedule(() -> {
-                        // Solo desconectamos si efectivamente sigue sin reproducir ni tener cola:
-                        boolean noPlaying = mm.scheduler.getPlayer().getPlayingTrack() == null;
-                        boolean emptyQueue = mm.scheduler.getQueueTitles().isEmpty();
-                        if (noPlaying && emptyQueue) {
-                            guild.getAudioManager().closeAudioConnection();
-                            text.sendMessage("⏹️ Me desconecto por inactividad. ¡Hasta pronto!").queue();
-                        }
-                    }, IDLE_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-
-                    return;
-                }
-
-                PlayerManager.getInstance()
-                    .getPlayerManager()
-                    .loadItem(info.directUrl(), new AudioLoadResultHandler() {
-                        @Override
-                        public void trackLoaded(AudioTrack track) {
-                            // Encola la pista
-                            String thumbUrl = info.videoId() != null
-                                ? "https://img.youtube.com/vi/" + info.videoId() + "/hqdefault.jpg"
-                                : null;
-
-                            // Encolar con requester
-                            mm.scheduler.queue(track, info.title(), thumbUrl, requester);
-
-                            // 1) Embed “Enqueued”
-                            text.sendMessageEmbeds(
-                                EmbedFactory.enqueuedEmbed(
-                                    info.title(),
-                                    track.getInfo().author,
-                                    track.getDuration(),
-                                    info.videoId(),
-                                    requester.getName(),
-                                    requester.getEffectiveAvatarUrl()
-                                )
-                            ).queue();
-
-                            // 2) Embed cola con “Now Playing”
-                            AudioTrack now = mm.scheduler.getPlayer().getPlayingTrack();
-                            String nowTitle = now != null
-                                ? mm.scheduler.getTitleMap().getOrDefault(now, now.getInfo().title)
-                                : "_Nada_";
-
-                            text.sendMessageEmbeds(
-                                EmbedFactory.queueWithNowPlayingEmbed(mm.scheduler, nowTitle)
-                            ).queue();
-                        }
-
-                        @Override
-                        public void playlistLoaded(AudioPlaylist playlist) {
-                            // Por simplicidad solo encolo la primera pista aquí
-                            // Puedes encolar todas o solo la primera
-                            for (AudioTrack t : playlist.getTracks()) {
-                                mm.scheduler.queue(t, t.getInfo().title, null, requester);
-                            }
-                            text.sendMessage("✅ Playlist encolada: **" + playlist.getName() + "** ("
-                                + playlist.getTracks().size() + " pistas)").queue();
-                        }
-
-                        @Override
-                        public void noMatches() {
-                            text.sendMessage("❌ No encontré: " + argument).queue();
-                        }
-
-                        @Override
-                        public void loadFailed(FriendlyException e) {
-                            text.sendMessage("⚠️ Error al cargar: " + e.getMessage()).queue();
-                        }
-                    });
-            } catch (Exception e) {
-                text.sendMessage("Error al procesar: " + e.getMessage()).queue();
+        audio.enqueue(guild, query).whenComplete((result, err) -> {
+            if (err != null) {
+                event.getHook().sendMessage("Error procesando la peticion: " + err.getMessage()).queue();
+                return;
+            }
+            switch (result) {
+                case LoadResult.Single s -> handleSingle(event, requester, g, s);
+                case LoadResult.Playlist p -> event.getHook()
+                        .sendMessage("Encoladas **" + p.playlist().getTracks().size()
+                                + "** pistas de _" + p.playlist().getName() + "_.").queue();
+                case LoadResult.NoMatches n -> event.getHook()
+                        .sendMessage("No encontre nada para: `" + query + "`").queue();
+                case LoadResult.Failed f -> event.getHook()
+                        .sendMessage("No se pudo cargar la pista: " + f.error().getMessage()).queue();
             }
         });
+    }
+
+    private void handleSingle(SlashCommandInteractionEvent event, User requester,
+                              GuildAudio g, LoadResult.Single single) {
+        var track = single.track();
+        if (filter.isBlocked(track.getInfo().title)) {
+            g.scheduler().clear();
+            event.getHook().sendMessage("La cancion **" + track.getInfo().title
+                    + "** esta bloqueada por filtros.").queue();
+            return;
+        }
+
+        boolean nowPlaying = g.scheduler().nowPlaying() == track;
+        var embed = nowPlaying
+                ? EmbedFactory.nowPlaying(track, requester.getName(), requester.getEffectiveAvatarUrl())
+                : EmbedFactory.enqueued(track, g.scheduler().snapshot().size(),
+                                        requester.getName(), requester.getEffectiveAvatarUrl());
+        event.getHook().sendMessageEmbeds(embed).queue();
     }
 }
