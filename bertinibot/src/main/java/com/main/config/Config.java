@@ -53,6 +53,28 @@ public final class Config {
         return optional("BLOCKED_TITLES", "blocked.titles").orElse("roxanne+arizona");
     }
 
+    /**
+     * Spotify Web API client id (free, no Premium needed). Get one at
+     * {@code https://developer.spotify.com/dashboard}. When absent, the
+     * Spotify resolver stays disabled and Spotify URLs fall back to a
+     * "missing credentials" error message.
+     */
+    public static Optional<String> spotifyClientId() {
+        return optional("SPOTIFY_CLIENT_ID", "spotify.client.id");
+    }
+
+    public static Optional<String> spotifyClientSecret() {
+        return optional("SPOTIFY_CLIENT_SECRET", "spotify.client.secret");
+    }
+
+    /**
+     * ISO-3166-1 alpha-2 market used for things like artist top-tracks
+     * (Spotify uses it to localise results). Defaults to "ES".
+     */
+    public static String spotifyMarket() {
+        return optional("SPOTIFY_MARKET", "spotify.market").orElse("ES");
+    }
+
     private static Optional<String> optional(String envName, String... propertyKeys) {
         String envValue = System.getenv(envName);
         if (envValue != null && !envValue.isBlank()) return Optional.of(envValue.trim());

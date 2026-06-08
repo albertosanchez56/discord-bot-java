@@ -5,6 +5,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.main.admin.AdminHttpServer;
 import com.main.audio.AudioService;
 import com.main.commands.BuildCommand;
 import com.main.commands.ClearCommand;
@@ -31,6 +32,10 @@ import com.main.listeners.VoiceChannelListener;
 import com.main.panel.PanelButtonHandler;
 import com.main.panel.PanelButtons;
 import com.main.panel.PanelService;
+import com.main.spotify.SpotifyClient;
+import com.main.spotify.SpotifyEmbedScraper;
+import com.main.spotify.SpotifyMetadataProvider;
+import com.main.spotify.SpotifyResolver;
 
 import moe.kyokobot.libdave.NativeDaveFactory;
 import moe.kyokobot.libdave.jda.LDJDADaveSessionFactory;
@@ -68,6 +73,24 @@ public final class Bootstrap {
         PanelService panel = new PanelService(audio);
         audio.setOnGuildUpdate(panel::update);
 
+        // Spotify integration: always enabled.
+        //  - If client_id / client_secret are configured, use the official
+        //    Web API (more reliable, supports paginated playlists, works
+        //    for /artist/ top-tracks).
+        //  - Otherwise fall back to scraping the public open.spotify.com/
+        //    embed pages, which requires no credentials nor Premium.
+        SpotifyMetadataProvider spotifyBackend;
+        var spotifyId = Config.spotifyClientId();
+        var spotifySecret = Config.spotifyClientSecret();
+        if (spotifyId.isPresent() && spotifySecret.isPresent()) {
+            spotifyBackend = new SpotifyClient(
+                    spotifyId.get(), spotifySecret.get(), Config.spotifyMarket());
+        } else {
+            spotifyBackend = new SpotifyEmbedScraper();
+        }
+        SpotifyResolver spotify = new SpotifyResolver(spotifyBackend, audio);
+        log.info("Spotify integration enabled via: {}", spotifyBackend.displayName());
+
         CommandRegistry registry = new CommandRegistry();
         ComponentRouter router = new ComponentRouter();
         PrefixCommandRouter prefixRouter = new PrefixCommandRouter();
@@ -76,7 +99,7 @@ public final class Bootstrap {
         router.onButton(PanelButtons.PREFIX, buttonHandler::handle);
 
         List<SlashCommand> commands = List.of(
-                new PlayCommand(audio),
+                new PlayCommand(audio, spotify),
                 new SkipCommand(audio),
                 new QueueCommand(audio),
                 new ClearCommand(audio),
@@ -116,10 +139,52 @@ public final class Bootstrap {
         panel.bind(jda);
         registry.publish(jda);
 
+        // Admin HTTP endpoint so the Windows control panel can request a
+        // graceful shutdown (Discord sees the bot disconnect immediately
+        // instead of waiting ~60s for the gateway heartbeats to time out).
+        Runnable gracefulShutdown = () -> {
+            try {
+                log.info("Graceful shutdown started...");
+                audio.shutdown();
+                jda.shutdown();
+                if (!jda.awaitShutdown(java.time.Duration.ofSeconds(8))) {
+                    log.warn("JDA did not shut down in time, forcing.");
+                    jda.shutdownNow();
+                }
+            } catch (Exception e) {
+                log.warn("Error during graceful shutdown: {}", e.getMessage());
+            } finally {
+                System.exit(0);
+            }
+        };
+
+        AdminHttpServer admin = new AdminHttpServer(8765, gracefulShutdown);
+        try {
+            admin.start();
+        } catch (java.io.IOException e) {
+            log.warn("Could not start admin HTTP endpoint on port 8765 ({}). "
+                    + "Stop via the control panel will fall back to a forced kill.",
+                    e.getMessage());
+        }
+
+        // Drop our PID next to the JAR so the Windows control panel can find
+        // us without parsing tasklist/wmic. Best-effort; the panel also
+        // scans ProcessHandle.allProcesses() as a fallback.
+        java.nio.file.Path pidFile = java.nio.file.Paths.get("target", "bot.pid");
+        try {
+            java.nio.file.Files.createDirectories(pidFile.getParent());
+            java.nio.file.Files.writeString(pidFile,
+                    Long.toString(ProcessHandle.current().pid()));
+        } catch (Exception e) {
+            log.debug("Could not write {}: {}", pidFile, e.getMessage());
+        }
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            log.info("Shutting down BertiniBot V2...");
+            log.info("JVM shutdown hook firing...");
+            admin.stop();
             audio.shutdown();
             jda.shutdown();
+            try { java.nio.file.Files.deleteIfExists(pidFile); } catch (Exception ignored) {}
         }, "bot-shutdown"));
 
         log.info("BertiniBot V2 online as {} | {} slash + {} prefix command(s) | filter terms: {}",

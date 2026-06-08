@@ -21,6 +21,7 @@ public final class EmbedFactory {
     private static final Color ENQUEUED_GREEN = new Color(0x00C853);
     private static final Color QUEUE_PURPLE = new Color(0x6A0DAD);
     private static final Color PANEL_BLUE = new Color(0x3498DB);
+    private static final Color SPOTIFY_GREEN = new Color(0x1DB954);
     private static final int QUEUE_PREVIEW_LIMIT = 15;
     private static final int PROGRESS_BAR_SIZE = 18;
 
@@ -150,6 +151,71 @@ public final class EmbedFactory {
         eb.addField("Cola", "`" + (queued == 0 ? "vacia" : queued + " pista(s)") + "`", true);
         eb.addField("Loop", "`" + scheduler.getLoopMode().name() + "`", true);
         eb.addField("Volumen", "`" + scheduler.getVolume() + "%`", true);
+        return eb.build();
+    }
+
+    /**
+     * Embed shown right after a Spotify album/playlist/artist URL is loaded
+     * but BEFORE every YouTube search has resolved. Tells the user we're on
+     * it and what's coming.
+     */
+    public static MessageEmbed spotifyBundleStarted(com.main.spotify.SpotifyBundle bundle,
+                                                     int trackCount,
+                                                     String requesterName,
+                                                     String requesterAvatar) {
+        String kind = bundle.kindLabel();
+        EmbedBuilder eb = new EmbedBuilder()
+                .setAuthor("\uD83C\uDFB5  Spotify \u2192 YouTube", safeUrl(bundle.externalUrl()), null)
+                .setTitle("Cargando " + kind + ": " + bundle.name(), safeUrl(bundle.externalUrl()))
+                .setColor(SPOTIFY_GREEN)
+                .setDescription("Resolviendo `" + trackCount + "` pista"
+                        + (trackCount == 1 ? "" : "s") + " en YouTube... "
+                        + "la primera ya esta en marcha.");
+
+        if (bundle.ownerOrArtist() != null && !bundle.ownerOrArtist().isBlank()) {
+            String label = switch (bundle.kind()) {
+                case ALBUM -> "Artista";
+                case PLAYLIST -> "Autor";
+                case ARTIST -> "Artista";
+                case TRACK -> "Artista";
+            };
+            eb.addField(label, "`" + bundle.ownerOrArtist() + "`", true);
+        }
+        eb.addField("Pistas", "`" + trackCount + "`", true);
+        if (bundle.totalTracks() > trackCount) {
+            eb.addField("(Spotify dice)", "`" + bundle.totalTracks() + " totales`", true);
+        }
+        String cover = safeUrl(bundle.coverArtUrl());
+        if (cover != null) eb.setThumbnail(cover);
+
+        if (requesterName != null) {
+            eb.setFooter("Pedido por " + requesterName, safeUrl(requesterAvatar));
+        }
+        eb.setTimestamp(Instant.now());
+        return eb.build();
+    }
+
+    /**
+     * Embed shown once the whole Spotify bundle has finished being resolved
+     * and (best-effort) queued.
+     */
+    public static MessageEmbed spotifyBundleDone(com.main.spotify.SpotifyBundle bundle,
+                                                  int queued, int failed, int total) {
+        String kind = bundle.kindLabel();
+        EmbedBuilder eb = new EmbedBuilder()
+                .setAuthor("\uD83C\uDFB5  Spotify \u2192 YouTube", safeUrl(bundle.externalUrl()), null)
+                .setTitle("Listo: " + bundle.name(), safeUrl(bundle.externalUrl()))
+                .setColor(SPOTIFY_GREEN)
+                .setDescription("Encoladas `" + queued + "` de `" + total
+                        + "` pistas del " + kind + ".");
+
+        eb.addField("Encoladas", "`" + queued + "`", true);
+        if (failed > 0) {
+            eb.addField("Fallidas / bloqueadas", "`" + failed + "`", true);
+        }
+        String cover = safeUrl(bundle.coverArtUrl());
+        if (cover != null) eb.setThumbnail(cover);
+        eb.setTimestamp(Instant.now());
         return eb.build();
     }
 

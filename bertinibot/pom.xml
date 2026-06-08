@@ -152,7 +152,12 @@
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.6.0</version>
                 <executions>
+                    <!--
+                        Main bot JAR: bertinibot-${version}.jar
+                        Includes everything (JDA, Lavaplayer, libdave, etc.).
+                    -->
                     <execution>
+                        <id>bot-shade</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
@@ -176,6 +181,45 @@
                                     </excludes>
                                 </filter>
                             </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        Control panel JAR: bertinibot-${version}-panel.jar
+                        Only the com.main.panel.gui.* classes; zero runtime
+                        dependencies (pure JDK Swing + java.net.http). Tiny
+                        (< 100 KB) and self-contained so the user can just
+                        `javaw -jar bertinibot-2.0.0-panel.jar` to open the
+                        GUI without ever seeing a terminal.
+                    -->
+                    <execution>
+                        <id>panel-shade</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>panel</shadedClassifierName>
+                            <artifactSet>
+                                <includes>
+                                    <include>${project.groupId}:${project.artifactId}</include>
+                                </includes>
+                            </artifactSet>
+                            <filters>
+                                <filter>
+                                    <artifact>${project.groupId}:${project.artifactId}</artifact>
+                                    <includes>
+                                        <include>com/main/panel/gui/**</include>
+                                    </includes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.main.panel.gui.PanelApp</mainClass>
+                                </transformer>
+                            </transformers>
                         </configuration>
                     </execution>
                 </executions>

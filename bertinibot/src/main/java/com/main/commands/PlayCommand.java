@@ -9,6 +9,9 @@ import com.main.audio.GuildAudio;
 import com.main.audio.RequesterInfo;
 import com.main.core.PrefixCommand;
 import com.main.core.SlashCommand;
+import com.main.spotify.SpotifyRef;
+import com.main.spotify.SpotifyResolver;
+import com.main.spotify.SpotifyUrlParser;
 import com.main.util.EmbedFactory;
 
 import net.dv8tion.jda.api.entities.Guild;
@@ -30,15 +33,22 @@ public final class PlayCommand implements SlashCommand, SlashCommand.AutoComplet
     private static final String BLOCKED_GIF = "https://tenor.com/view/aqui-no-hay-quien-viva-gif-14069994";
 
     private final AudioService audio;
+    /** Optional: only set when Spotify credentials are configured. */
+    private final SpotifyResolver spotify;
 
     public PlayCommand(AudioService audio) {
+        this(audio, null);
+    }
+
+    public PlayCommand(AudioService audio, SpotifyResolver spotify) {
         this.audio = audio;
+        this.spotify = spotify;
     }
 
     @Override
     public SlashCommandData data() {
-        return Commands.slash("play", "Reproduce audio desde YouTube (URL o busqueda).")
-                .addOption(OptionType.STRING, "query", "URL de YouTube o texto a buscar", true, true);
+        return Commands.slash("play", "Reproduce audio desde YouTube o Spotify (URL o busqueda).")
+                .addOption(OptionType.STRING, "query", "URL de YouTube/Spotify o texto a buscar", true, true);
     }
 
     @Override
@@ -132,6 +142,13 @@ public final class PlayCommand implements SlashCommand, SlashCommand.AutoComplet
 
         RequesterInfo info = new RequesterInfo(requester.getName(), requester.getEffectiveAvatarUrl());
 
+        // Spotify URL? Route to the resolver, which itself talks back to
+        // AudioService.enqueue() with a YouTube search per track.
+        if (SpotifyUrlParser.looksLikeSpotify(query)) {
+            handleSpotify(guild, requester, info, query, reply, replyEmbed, silentAck);
+            return;
+        }
+
         audio.enqueue(guild, query, info).whenComplete((result, err) -> {
             if (err != null) {
                 reply.accept("Error procesando la peticion: " + err.getMessage());
@@ -153,6 +170,75 @@ public final class PlayCommand implements SlashCommand, SlashCommand.AutoComplet
                 case LoadResult.Failed f -> reply.accept("No se pudo cargar la pista: "
                         + f.error().getMessage());
             }
+        });
+    }
+
+    private void handleSpotify(Guild guild, User requester, RequesterInfo info, String query,
+                                Consumer<String> reply, Consumer<MessageEmbed> replyEmbed,
+                                Consumer<String> silentAck) {
+        if (spotify == null) {
+            // Defensive: Bootstrap now always provides a resolver (API or
+            // scraper fallback), so this branch should be unreachable.
+            reply.accept("Spotify no esta disponible en este momento.");
+            return;
+        }
+        SpotifyRef ref = SpotifyUrlParser.parse(query).orElse(null);
+        if (ref == null) {
+            reply.accept("No reconozco esta URL de Spotify: `" + query + "`");
+            return;
+        }
+        GuildAudio g = audio.get(guild);
+        spotify.resolveAndEnqueue(guild, ref, info).whenComplete((outcome, err) -> {
+            if (err != null) {
+                reply.accept("Error consultando Spotify: " + err.getMessage());
+                return;
+            }
+            switch (outcome) {
+                case SpotifyResolver.Outcome.Single s -> handleSpotifySingle(g, requester, s, reply, replyEmbed, silentAck);
+                case SpotifyResolver.Outcome.Bundle b -> handleSpotifyBundle(b, requester, replyEmbed);
+                case SpotifyResolver.Outcome.EmptyBundle e -> reply.accept(
+                        "El " + e.bundle().kindLabel() + " _" + e.bundle().name()
+                                + "_ no tiene pistas reproducibles.");
+                case SpotifyResolver.Outcome.Error e -> reply.accept(
+                        "Spotify devolvio un error: " + e.error().getMessage());
+            }
+        });
+    }
+
+    private void handleSpotifySingle(GuildAudio g, User requester,
+                                      SpotifyResolver.Outcome.Single single,
+                                      Consumer<String> reply, Consumer<MessageEmbed> replyEmbed,
+                                      Consumer<String> silentAck) {
+        switch (single.loadResult()) {
+            case LoadResult.Single s -> handleSingle(g, requester, s, reply, replyEmbed, silentAck);
+            case LoadResult.Playlist p -> {
+                if (!p.playlist().getTracks().isEmpty()) {
+                    replyEmbed.accept(EmbedFactory.enqueued(p.playlist().getTracks().get(0),
+                            g.scheduler().snapshot().size(),
+                            requester.getName(), requester.getEffectiveAvatarUrl()));
+                } else {
+                    reply.accept("Spotify: no encontre nada para _"
+                            + single.track().artistsDisplay() + " - " + single.track().title() + "_.");
+                }
+            }
+            case LoadResult.Blocked b -> handleBlocked(b.track(), reply);
+            case LoadResult.NoMatches n -> reply.accept("Spotify: no encontre nada en YouTube para _"
+                    + single.track().artistsDisplay() + " - " + single.track().title() + "_.");
+            case LoadResult.Failed f -> reply.accept("No se pudo reproducir esta pista de Spotify: "
+                    + f.error().getMessage());
+        }
+    }
+
+    private void handleSpotifyBundle(SpotifyResolver.Outcome.Bundle b, User requester,
+                                      Consumer<MessageEmbed> replyEmbed) {
+        // Immediate embed: we already started queuing.
+        replyEmbed.accept(EmbedFactory.spotifyBundleStarted(b.bundle(), b.totalToTry(),
+                requester.getName(), requester.getEffectiveAvatarUrl()));
+        // When the background batch finishes, post the totals embed.
+        b.completion().whenComplete((stats, err) -> {
+            if (err != null || stats == null) return;
+            replyEmbed.accept(EmbedFactory.spotifyBundleDone(
+                    b.bundle(), stats.queued(), stats.failed(), stats.total()));
         });
     }
 
