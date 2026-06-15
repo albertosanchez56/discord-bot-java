@@ -23,6 +23,8 @@ public final class EmbedFactory {
     private static final Color PANEL_BLUE = new Color(0x3498DB);
     private static final Color SPOTIFY_GREEN = new Color(0x1DB954);
     private static final int QUEUE_PREVIEW_LIMIT = 15;
+    /** Tracks shown per page in the paginated {@code /queue} embed. */
+    public static final int QUEUE_PAGE_SIZE = 10;
     private static final int PROGRESS_BAR_SIZE = 18;
 
     private EmbedFactory() {}
@@ -81,9 +83,27 @@ public final class EmbedFactory {
         return eb.build();
     }
 
+    /** Single-page queue embed (kept for callers that don't paginate). */
     public static MessageEmbed queue(Scheduler scheduler) {
+        return queuePage(scheduler, 0, QUEUE_PREVIEW_LIMIT);
+    }
+
+    /**
+     * Paginated queue embed.
+     *
+     * @param scheduler the per-guild scheduler whose state is rendered
+     * @param page      zero-based page index; clamped to the valid range
+     * @param pageSize  tracks shown per page (use {@link #QUEUE_PAGE_SIZE}
+     *                  for the standard paginated UI)
+     */
+    public static MessageEmbed queuePage(Scheduler scheduler, int page, int pageSize) {
         AudioTrack now = scheduler.nowPlaying();
         List<AudioTrack> upcoming = scheduler.snapshot();
+        int total = upcoming.size();
+        int totalPages = Math.max(1, (total + pageSize - 1) / pageSize);
+        int p = Math.max(0, Math.min(page, totalPages - 1));
+        int from = p * pageSize;
+        int to = Math.min(from + pageSize, total);
 
         EmbedBuilder eb = new EmbedBuilder()
                 .setAuthor("\uD83C\uDFB6  Cola de reproduccion", null, null)
@@ -100,24 +120,22 @@ public final class EmbedFactory {
             eb.addField("\u25B6  Sonando ahora", "_Nada._", false);
         }
 
-        if (upcoming.isEmpty()) {
+        if (total == 0) {
             eb.addField("\uD83D\uDCCB  Proximas pistas", "_La cola esta vacia._", false);
         } else {
             StringBuilder sb = new StringBuilder();
-            int max = Math.min(upcoming.size(), QUEUE_PREVIEW_LIMIT);
             long totalMs = 0;
-            for (int i = 0; i < max; i++) {
+            for (int i = from; i < to; i++) {
                 AudioTrackInfo info = upcoming.get(i).getInfo();
                 sb.append("`").append(String.format("%2d", i + 1)).append(".` ")
                   .append(truncate(info.title, 60))
                   .append(" `[").append(formatTime(info.length)).append("]`\n");
             }
             for (AudioTrack t : upcoming) totalMs += t.getInfo().length;
-            if (upcoming.size() > max) {
-                sb.append("_...y ").append(upcoming.size() - max).append(" pista(s) mas._");
-            }
-            eb.addField("\uD83D\uDCCB  Proximas pistas", sb.toString(), false);
-            eb.addField("Total en cola", "`" + upcoming.size() + " pistas`", true);
+            String header = "\uD83D\uDCCB  Proximas pistas"
+                    + (totalPages > 1 ? "  (pag. " + (p + 1) + "/" + totalPages + ")" : "");
+            eb.addField(header, sb.toString(), false);
+            eb.addField("Total en cola", "`" + total + " pistas`", true);
             eb.addField("Duracion total", "`" + formatTime(totalMs) + "`", true);
         }
 

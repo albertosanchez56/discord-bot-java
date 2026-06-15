@@ -84,6 +84,49 @@ public final class Scheduler extends AudioEventAdapter {
         fireChange();
     }
 
+    /**
+     * Removes the track at the given 1-based position in the upcoming queue
+     * (the currently playing track is position 0 and cannot be removed via
+     * this method -- use {@link #skip()} instead).
+     *
+     * @return the removed track, or {@code null} if the index is out of range
+     */
+    public synchronized AudioTrack removeAt(int oneBasedIndex) {
+        int idx = oneBasedIndex - 1;
+        if (idx < 0) return null;
+        List<AudioTrack> list = new ArrayList<>(queue);
+        if (idx >= list.size()) return null;
+        AudioTrack removed = list.remove(idx);
+        queue.clear();
+        queue.addAll(list);
+        fireChange();
+        return removed;
+    }
+
+    /**
+     * Moves the track at {@code from} (1-based) to position {@code to}
+     * (1-based). Both ends are clamped to the current queue size so the
+     * caller doesn't have to worry about off-by-one races against new
+     * tracks being enqueued.
+     *
+     * @return the moved track, or {@code null} if {@code from} was out of
+     *         range or the queue was empty
+     */
+    public synchronized AudioTrack move(int fromOneBased, int toOneBased) {
+        int from = fromOneBased - 1;
+        if (from < 0) return null;
+        List<AudioTrack> list = new ArrayList<>(queue);
+        if (from >= list.size()) return null;
+        int to = Math.max(0, Math.min(toOneBased - 1, list.size() - 1));
+        if (to == from) return list.get(from);
+        AudioTrack moved = list.remove(from);
+        list.add(to, moved);
+        queue.clear();
+        queue.addAll(list);
+        fireChange();
+        return moved;
+    }
+
     public List<AudioTrack> snapshot() {
         return List.copyOf(queue);
     }

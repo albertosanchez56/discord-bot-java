@@ -13,10 +13,14 @@ import com.main.commands.CoinFlipCommand;
 import com.main.commands.HelpCommand;
 import com.main.commands.InfoCommand;
 import com.main.commands.LoopCommand;
+import com.main.commands.MoveCommand;
 import com.main.commands.PanelCommand;
 import com.main.commands.PingCommand;
 import com.main.commands.PlayCommand;
+import com.main.commands.QueueButtonHandler;
+import com.main.commands.QueueButtons;
 import com.main.commands.QueueCommand;
+import com.main.commands.RemoveCommand;
 import com.main.commands.SeekCommand;
 import com.main.commands.ShuffleCommand;
 import com.main.commands.SkipCommand;
@@ -98,10 +102,15 @@ public final class Bootstrap {
         PanelButtonHandler buttonHandler = new PanelButtonHandler(audio, panel);
         router.onButton(PanelButtons.PREFIX, buttonHandler::handle);
 
+        QueueButtonHandler queueButtonHandler = new QueueButtonHandler(audio);
+        router.onButton(QueueButtons.PREFIX, queueButtonHandler::handle);
+
         List<SlashCommand> commands = List.of(
                 new PlayCommand(audio, spotify),
                 new SkipCommand(audio),
                 new QueueCommand(audio),
+                new RemoveCommand(audio),
+                new MoveCommand(audio),
                 new ClearCommand(audio),
                 new LoopCommand(audio),
                 new ShuffleCommand(audio),
