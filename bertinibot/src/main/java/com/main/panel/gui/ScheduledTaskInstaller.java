@@ -111,6 +111,12 @@ public final class ScheduledTaskInstaller {
 
     private static String buildTaskXml(Path javaw, Path jar, Path workDir, String userId) {
         String xmlUser = xmlEscape(userId);
+        String sslArgs = String.join(" ", SslTruststore.jvmArgs(workDir));
+        String jarArg = "-jar &quot;" + xmlEscape(jar.toString()) + "&quot;";
+        String arguments = sslArgs.isBlank()
+                ? jarArg
+                : xmlEscape(sslArgs) + " " + jarArg;
+
         return "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n"
                 + "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n"
                 + "  <RegistrationInfo>\n"
@@ -150,7 +156,7 @@ public final class ScheduledTaskInstaller {
                 + "  <Actions Context=\"Author\">\n"
                 + "    <Exec>\n"
                 + "      <Command>" + xmlEscape(javaw.toString()) + "</Command>\n"
-                + "      <Arguments>-jar &quot;" + xmlEscape(jar.toString()) + "&quot;</Arguments>\n"
+                + "      <Arguments>" + arguments + "</Arguments>\n"
                 + "      <WorkingDirectory>" + xmlEscape(workDir.toString()) + "</WorkingDirectory>\n"
                 + "    </Exec>\n"
                 + "  </Actions>\n"

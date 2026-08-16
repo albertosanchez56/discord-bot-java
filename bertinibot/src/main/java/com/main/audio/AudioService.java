@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.main.audio.Scheduler.LoopMode;
+import com.main.config.Config;
 import com.main.util.EmbedFactory;
 import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
@@ -25,6 +26,14 @@ import com.sedmelluq.discord.lavaplayer.track.AudioPlaylist;
 import com.sedmelluq.discord.lavaplayer.track.AudioTrack;
 
 import dev.lavalink.youtube.YoutubeAudioSourceManager;
+import dev.lavalink.youtube.YoutubeSourceOptions;
+import dev.lavalink.youtube.clients.AndroidMusicWithThumbnail;
+import dev.lavalink.youtube.clients.AndroidVrWithThumbnail;
+import dev.lavalink.youtube.clients.MusicWithThumbnail;
+import dev.lavalink.youtube.clients.TvHtml5SimplyWithThumbnail;
+import dev.lavalink.youtube.clients.WebWithThumbnail;
+import dev.lavalink.youtube.clients.WebEmbeddedWithThumbnail;
+import dev.lavalink.youtube.clients.skeleton.Client;
 
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.channel.middleman.AudioChannel;
@@ -70,10 +79,41 @@ public final class AudioService {
     private volatile BiPredicate<String, String> trackBlockedFilter = (title, author) -> false;
 
     public AudioService() {
-        YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager(true);
+        // Remote cipher is required nowadays: YouTube rotates the player
+        // script often and local extraction (must find sig function) fails
+        // for weeks between youtube-source releases. Defaults to the public
+        // yt-cipher instance; override via YOUTUBE_REMOTE_CIPHER_URL.
+        String cipherUrl = Config.youtubeRemoteCipherUrl();
+        String cipherPassword = Config.youtubeRemoteCipherPassword().orElse(null);
+
+        YoutubeSourceOptions options = new YoutubeSourceOptions()
+                .setAllowSearch(true)
+                .setAllowDirectVideoIds(true)
+                .setAllowDirectPlaylistIds(true)
+                .setRemoteCipher(cipherUrl, cipherPassword, "BertiniBot");
+
+        // Order matters: first client that can answer wins. Mix of search-
+        // capable + playback-capable clients, preferring ones that still
+        // return Opus when possible.
+        Client[] clients = {
+                new MusicWithThumbnail(),
+                new WebWithThumbnail(),
+                new AndroidVrWithThumbnail(),
+                new AndroidMusicWithThumbnail(),
+                new TvHtml5SimplyWithThumbnail(),
+                new WebEmbeddedWithThumbnail()
+        };
+
+        YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager(options, clients);
         playerManager.registerSourceManager(youtube);
-        AudioSourceManagers.registerRemoteSources(playerManager);
+
+        // Exclude Lavaplayer's built-in (deprecated) YouTube source so it
+        // does not race / override youtube-source.
+        AudioSourceManagers.registerRemoteSources(playerManager,
+                com.sedmelluq.discord.lavaplayer.source.youtube.YoutubeAudioSourceManager.class);
         AudioSourceManagers.registerLocalSource(playerManager);
+
+        log.info("YouTube source ready (youtube-source + remote cipher at {}).", cipherUrl);
     }
 
     public AudioPlayerManager playerManager() { return playerManager; }

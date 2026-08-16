@@ -100,6 +100,44 @@ function Stop-Bot {
     @{ Killed = $procs.Count; Graceful = $gracefulOk; Message = $msg }
 }
 
+function Get-SslJvmArgs {
+    # Antivirus HTTPS scanning (Avast, etc.) injects a MITM root into the
+    # Windows cert store. Java ignores that store and fails with PKIX errors
+    # unless we feed it a local truststore that includes the AV root.
+    $trustDir = Join-Path $script:WorkDir 'truststore'
+    $trustStore = Join-Path $trustDir 'cacerts'
+    $javaHome = Split-Path (Split-Path (Find-Java))
+    $systemCacerts = Join-Path $javaHome 'lib\security\cacerts'
+    if (-not (Test-Path $systemCacerts)) { return @() }
+
+    if (-not (Test-Path $trustDir)) { New-Item -ItemType Directory -Path $trustDir | Out-Null }
+    if (-not (Test-Path $trustStore)) { Copy-Item $systemCacerts $trustStore -Force }
+
+    $pat = 'Avast|Kaspersky|ESET|Bitdefender|Norton|McAfee|Sophos|Fiddler|Charles|Webroot|Malwarebytes|AVG|Panda|Trend Micro|BullGuard|Avira|HTTPS Scanning|Web/Mail Shield'
+    $i = 0
+    Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
+        Where-Object { $_.Subject -match $pat } |
+        ForEach-Object {
+            $cer = Join-Path $env:TEMP ("bertini-mitm-$i.cer")
+            try {
+                Export-Certificate -Cert $_ -FilePath $cer -Type CERT | Out-Null
+                $alias = "windows-mitm-$i"
+                & keytool -list -keystore $trustStore -storepass changeit -alias $alias 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    & keytool -importcert -noprompt -alias $alias -file $cer `
+                        -keystore $trustStore -storepass changeit 2>$null | Out-Null
+                }
+            } catch {}
+            finally { Remove-Item $cer -Force -ErrorAction SilentlyContinue }
+            $i++
+        }
+
+    @(
+        "-Djavax.net.ssl.trustStore=$trustStore",
+        "-Djavax.net.ssl.trustStorePassword=changeit"
+    )
+}
+
 function Start-Bot {
     if (-not (Test-Path $script:JarPath)) {
         throw "No existe el JAR: $script:JarPath. Compila primero con: .\mvnw.cmd -B -ntp -DskipTests package"
@@ -111,7 +149,8 @@ function Start-Bot {
     # scheduled task is only used as the boot trigger at user login.
     # (javaw.exe is already a windowless binary, so no -WindowStyle is needed.)
     $java = Find-Java
-    Start-Process -FilePath $java -ArgumentList @('-jar', "`"$script:JarPath`"") `
+    $args = @(Get-SslJvmArgs) + @('-jar', "`"$script:JarPath`"")
+    Start-Process -FilePath $java -ArgumentList $args `
         -WorkingDirectory $script:WorkDir | Out-Null
 
     Start-Sleep -Seconds 2
@@ -129,8 +168,10 @@ function Restart-Bot {
 
 function Install-Task {
     $java = Find-Java
+    $ssl = @(Get-SslJvmArgs)
+    $argLine = (($ssl + @("-jar `"$script:JarPath`"")) -join ' ')
     $action = New-ScheduledTaskAction -Execute $java `
-        -Argument "-jar `"$script:JarPath`"" -WorkingDirectory $script:WorkDir
+        -Argument $argLine -WorkingDirectory $script:WorkDir
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME `
         -LogonType Interactive -RunLevel Limited

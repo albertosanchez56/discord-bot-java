@@ -202,17 +202,32 @@ public final class Bootstrap {
     }
 
     /**
-     * On Windows, route SSL validation through the OS truststore.
-     *
-     * Some antivirus / firewall setups intercept HTTPS and present a locally
-     * signed certificate. The JDK truststore (cacerts) doesn't know it, but
-     * the Windows root store does, so this prevents PKIX errors when talking
-     * to Discord and YouTube. No-op on other operating systems.
+     * On Windows, make Java trust the same roots as the OS (incl. antivirus
+     * HTTPS-scanning CAs like Avast). Lavaplayer's Apache HttpClient reads
+     * {@code javax.net.ssl.trustStore*}, so we point it at a bot-local
+     * cacerts that merges the JDK defaults with those MITM roots.
+     * Falls back to {@code WINDOWS-ROOT} if the local truststore cannot be
+     * prepared. No-op on other operating systems.
      */
     private static void applyWindowsTrustStore() {
         String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.startsWith("windows")) {
-            System.setProperty("javax.net.ssl.trustStoreType", "WINDOWS-ROOT");
+        if (!os.startsWith("windows")) return;
+
+        // Prefer an explicit truststore next to the bot (created/updated by
+        // SslTruststore). Avoids depending on the JVM honouring WINDOWS-ROOT
+        // for every HTTP stack we pull in (JDA + Lavaplayer + yt-cipher).
+        try {
+            var root = java.nio.file.Paths.get("").toAbsolutePath().normalize();
+            var store = com.main.panel.gui.SslTruststore.ensure(root);
+            if (store.isPresent()) {
+                System.setProperty("javax.net.ssl.trustStore", store.get().toString());
+                System.setProperty("javax.net.ssl.trustStorePassword",
+                        com.main.panel.gui.SslTruststore.PASSWORD);
+                return;
+            }
+        } catch (Exception ignored) {
+            // fall through
         }
+        System.setProperty("javax.net.ssl.trustStoreType", "WINDOWS-ROOT");
     }
 }

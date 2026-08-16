@@ -75,6 +75,25 @@ public final class Config {
         return optional("SPOTIFY_MARKET", "spotify.market").orElse("ES");
     }
 
+    /**
+     * Base URL of a yt-cipher-compatible remote signature server. YouTube
+     * rotates player scripts often enough that local cipher extraction
+     * breaks; a remote cipher keeps playback working without waiting for
+     * a youtube-source release. Defaults to the public instance.
+     */
+    public static String youtubeRemoteCipherUrl() {
+        return optional("YOUTUBE_REMOTE_CIPHER_URL", "youtube.remote.cipher.url")
+                .orElse("https://cipher.kikkia.dev/");
+    }
+
+    /**
+     * Optional password / API token for the remote cipher server. The public
+     * instance does not require one; leave empty unless you self-host.
+     */
+    public static Optional<String> youtubeRemoteCipherPassword() {
+        return optional("YOUTUBE_REMOTE_CIPHER_PASSWORD", "youtube.remote.cipher.password");
+    }
+
     private static Optional<String> optional(String envName, String... propertyKeys) {
         String envValue = System.getenv(envName);
         if (envValue != null && !envValue.isBlank()) return Optional.of(envValue.trim());

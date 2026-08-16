@@ -40,25 +40,34 @@ public final class HelpCommand implements SlashCommand, PrefixCommand {
         return new EmbedBuilder()
                 .setTitle("Comandos disponibles")
                 .setColor(new Color(0x3498DB))
-                .setDescription("Puedes usarlos como slash (`/`) o con prefijo `!`.")
-                .addField("Musica",
-                        "`/play | !play <url|texto>` - Reproduce / encola una pista\n"
-                      + "`/skip | !skip` (alias `!s`) - Salta a la siguiente pista\n"
-                      + "`/queue | !queue` (alias `!q`) - Muestra la cola\n"
-                      + "`/clear | !clear` (alias `!stop`) - Vacia la cola y detiene\n"
-                      + "`/loop | !loop <off|track|queue>` - Modo de loop\n"
-                      + "`/shuffle | !shuffle` (alias `!sh`) - Mezcla la cola\n"
+                .setDescription("Puedes usarlos como slash (`/`) o con prefijo `!`.\n"
+                        + "Entre parentesis los alias del prefijo.")
+                .addField("\uD83C\uDFB5  Reproduccion",
+                        "`/play | !play <url|texto>` (`!p`) - Reproduce / encola una pista. "
+                        + "Acepta YouTube, busqueda libre y URLs de Spotify (track/album/playlist).\n"
+                      + "`/skip | !skip` (`!s`) - Salta a la siguiente pista\n"
                       + "`/seek | !seek <mm:ss>` - Salta a una posicion en la pista\n"
-                      + "`/volume | !volume <0-150>` (alias `!vol`) - Ajusta volumen\n"
+                      + "`/loop | !loop <off|track|queue>` - Modo de loop\n"
                       + "`/panel | !panel` - Panel de control con botones",
                         false)
-                .addField("Utilidades",
-                        "`/moneda | !moneda` (alias `!flip`) - Lanza cara o cruz\n"
+                .addField("\uD83D\uDCCB  Cola",
+                        "`/queue | !queue` (`!q`, `!cola`) - Muestra la cola, paginada con botones\n"
+                      + "`/remove | !remove <n>` (`!rm`, `!quitar`, `!borrar`) - Quita la pista N de la cola\n"
+                      + "`/move | !move <desde> <hasta>` (`!mv`, `!mover`) - Mueve una pista de posicion\n"
+                      + "`/shuffle | !shuffle` (`!sh`, `!mezcla`, `!mezclar`) - Mezcla aleatoriamente la cola\n"
+                      + "`/clear | !clear` (`!stop`) - Vacia la cola y desconecta",
+                        false)
+                .addField("\uD83D\uDD0A  Ajustes",
+                        "`/volume | !volume <0-150>` (`!vol`, `!volumen`) - Ajusta el volumen",
+                        false)
+                .addField("\uD83D\uDEE0\uFE0F  Utilidades",
+                        "`/moneda | !moneda` (`!flip`, `!coin`) - Lanza cara o cruz\n"
                       + "`/build | !build <champion> [mode]` - Build de LoL desde METAsrc\n"
                       + "`/ping | !ping` - Latencia del bot\n"
                       + "`/info | !info` - Info del bot\n"
                       + "`/help | !help` - Esta ayuda",
                         false)
+                .setFooter("Tip: los botones de la cola te llevan a la primera/anterior/siguiente/ultima pagina.")
                 .build();
     }
 }

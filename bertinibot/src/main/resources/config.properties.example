@@ -29,3 +29,9 @@ discord.token=YOUR_DISCORD_TOKEN_HERE
 # spotify.client.id=your_spotify_client_id
 # spotify.client.secret=your_spotify_client_secret
 # spotify.market=ES
+
+# Optional - remote YouTube signature cipher (yt-cipher compatible).
+# Defaults to the public instance https://cipher.kikkia.dev/ which needs
+# no password. Only set these if you self-host yt-cipher.
+# youtube.remote.cipher.url=https://cipher.kikkia.dev/
+# youtube.remote.cipher.password=

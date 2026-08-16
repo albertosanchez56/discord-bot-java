@@ -25,3 +25,6 @@ Thumbs.db
 # Generated artifacts that should never be tracked
 *.tmp
 *.bak
+
+# Local Java truststore (includes antivirus MITM roots; machine-specific)
+bertinibot/truststore/

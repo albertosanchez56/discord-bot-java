@@ -137,14 +137,26 @@ public final class BotProcessManager {
         if (javaw == null) {
             return new Result(false, "No se encuentra java/javaw. Instala JDK 21 (Eclipse Adoptium).");
         }
-        ProcessBuilder pb = new ProcessBuilder(
-                javaw.toString(),
-                "-jar", paths.jarPath().toString())
+        List<String> cmd = new java.util.ArrayList<>();
+        cmd.add(javaw.toString());
+        cmd.addAll(SslTruststore.jvmArgs(paths.root()));
+        cmd.add("-jar");
+        cmd.add(paths.jarPath().toString());
+
+        // Capture startup crashes (missing Main-Class, NoClassDefFoundError,
+        // etc.) into logs/ so the panel message "no parece haber arrancado"
+        // is not a black box. stdout stays discarded to avoid a console.
+        Path errLog = paths.logDir().resolve("bot-stderr.log");
+        try {
+            Files.createDirectories(paths.logDir());
+        } catch (IOException ignored) {
+            // best-effort
+        }
+
+        ProcessBuilder pb = new ProcessBuilder(cmd)
                 .directory(paths.root().toFile())
-                // Send stdout/stderr to NUL so the new JVM never writes
-                // anything that could surface a console window.
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                .redirectError(ProcessBuilder.Redirect.DISCARD);
+                .redirectError(errLog.toFile());
         try {
             pb.start();
         } catch (IOException e) {
@@ -163,7 +175,15 @@ public final class BotProcessManager {
         if (findBotProcess().isPresent()) {
             return new Result(true, "Bot arrancado (a\u00fan inicializando JDA).");
         }
-        return new Result(false, "El bot no parece haber arrancado. Revisa los logs.");
+        String hint = "";
+        try {
+            if (Files.exists(errLog) && Files.size(errLog) > 0) {
+                String tail = Files.readString(errLog);
+                if (tail.length() > 400) tail = tail.substring(Math.max(0, tail.length() - 400));
+                hint = "\nDetalle: " + tail.trim();
+            }
+        } catch (IOException ignored) {}
+        return new Result(false, "El bot no parece haber arrancado. Revisa los logs." + hint);
     }
 
     public Result stop() {

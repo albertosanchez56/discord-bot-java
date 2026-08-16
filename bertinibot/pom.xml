@@ -20,7 +20,10 @@
         <jda.version>6.4.2</jda.version>
         <libdave.version>ce725965e</libdave.version>
         <lavaplayer.version>2.2.6</lavaplayer.version>
-        <youtube.source.version>1.13.4</youtube.source.version>
+        <!-- Keep in sync with https://github.com/lavalink-devs/youtube-source/releases
+             YouTube changes its player cipher frequently; an outdated plugin
+             loads tracks but plays silence / throws ScriptExtractionException. -->
+        <youtube.source.version>1.18.2</youtube.source.version>
         <slf4j.version>2.0.16</slf4j.version>
         <logback.version>1.5.16</logback.version>
         <jsoup.version>1.18.3</jsoup.version>
@@ -153,44 +156,12 @@
                 <version>3.6.0</version>
                 <executions>
                     <!--
-                        Main bot JAR: bertinibot-${version}.jar
-                        Includes everything (JDA, Lavaplayer, libdave, etc.).
-                    -->
-                    <execution>
-                        <id>bot-shade</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <minimizeJar>false</minimizeJar>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>${main.class}</mainClass>
-                                </transformer>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                            </transformers>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                        </configuration>
-                    </execution>
-
-                    <!--
-                        Control panel JAR: bertinibot-${version}-panel.jar
-                        Only the com.main.panel.gui.* classes; zero runtime
-                        dependencies (pure JDK Swing + java.net.http). Tiny
-                        (< 100 KB) and self-contained so the user can just
-                        `javaw -jar bertinibot-2.0.0-panel.jar` to open the
-                        GUI without ever seeing a terminal.
+                        IMPORTANT: panel-shade MUST run before bot-shade.
+                        Both executions touch the primary artifact; whichever
+                        runs last wins the final bertinibot-*.jar (and its
+                        Main-Class). If panel-shade runs last it strips the
+                        bot Main-Class and the control panel cannot start it
+                        ("no hay ningun atributo de manifiesto principal").
                     -->
                     <execution>
                         <id>panel-shade</id>
@@ -220,6 +191,39 @@
                                     <mainClass>com.main.panel.gui.PanelApp</mainClass>
                                 </transformer>
                             </transformers>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        Main bot JAR: bertinibot-${version}.jar
+                        Includes everything (JDA, Lavaplayer, libdave, etc.).
+                        Runs last so its Main-Class (Bootstrap) sticks.
+                    -->
+                    <execution>
+                        <id>bot-shade</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <minimizeJar>false</minimizeJar>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>${main.class}</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                         </configuration>
                     </execution>
                 </executions>
